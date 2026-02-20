@@ -25,7 +25,7 @@ WAKU_COLORS = {1: '⬜', 2: '⬛', 3: '🟥', 4: '🟦', 5: '🟨', 6: '🟩'}
 
 @st.cache_resource
 def load_models():
-    base = './models/'
+    base = './'
     with open(base + 'boatrace_model_v5.pkl', 'rb') as f:
         m_win = pickle.load(f)
     with open(base + 'calibration_models.pkl', 'rb') as f:
