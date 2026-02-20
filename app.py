@@ -26,16 +26,14 @@ WAKU_COLORS = {1: '⬜', 2: '⬛', 3: '🟥', 4: '🟦', 5: '🟨', 6: '🟩'}
 @st.cache_resource
 def load_models():
     base = './'
-    with open(base + 'boatrace_model_v5.pkl', 'rb') as f:
-        m_win = pickle.load(f)
-    with open(base + 'calibration_models.pkl', 'rb') as f:
-        cal_win = pickle.load(f)
-    with open(base + 'boatrace_model_top2.pkl', 'rb') as f:
-        m_top2 = pickle.load(f)
-    with open(base + 'boatrace_model_top3.pkl', 'rb') as f:
-        m_top3 = pickle.load(f)
+    with open(base + 'boatrace_model_1着_independent_full.pkl', 'rb') as f:
+        m_1st = pickle.load(f)
+    with open(base + 'boatrace_model_2着_independent_full.pkl', 'rb') as f:
+        m_2nd = pickle.load(f)
+    with open(base + 'boatrace_model_3着_independent_full.pkl', 'rb') as f:
+        m_3rd = pickle.load(f)
     df_racer = pd.read_csv(base + 'racer_course_data.csv')
-    return m_win, cal_win, m_top2, m_top3, df_racer
+    return m_1st, m_2nd, m_3rd, df_racer
 
 def fetch_race_data(jcd, hd, rno):
     url = f"https://www.boatrace.jp/owpc/pc/race/racelist?rno={rno}&jcd={jcd}&hd={hd}"
@@ -200,11 +198,6 @@ def build_features(boats, features, before_info, df_racer):
                            ('motor_2rate', 'motor_2rate_vs_avg'),
                            ('boat_2rate', 'boat_2rate_vs_avg')]:
         df[col] = df[col_base] - df[col_base].mean()
-    for col_base, col in [('national_win_rate', 'national_win_rate_rank'),
-                           ('national_2rate', 'national_2rate_rank'),
-                           ('motor_2rate', 'motor_2rate_rank'),
-                           ('boat_2rate', 'boat_2rate_rank')]:
-        df[col] = df[col_base].rank(ascending=False)
     df['et_rank'] = df['exhibition_time'].rank(ascending=True)
     df['et_vs_avg'] = df['exhibition_time'] - df['exhibition_time'].mean()
     df['et_vs_best'] = df['exhibition_time'] - df['exhibition_time'].min()
@@ -213,13 +206,6 @@ def build_features(boats, features, before_info, df_racer):
     df['st_vs_avg'] = df['st_time'] - df['st_time'].mean()
     df['st_waku'] = df['st_time'] * df['waku']
     df['et_st_combined'] = df['exhibition_time'] + df['st_time']
-    waku1 = df[df['waku'] == 1].iloc[0]
-    df['waku1_grade'] = waku1['grade_num']
-    df['waku1_win_rate'] = waku1['national_win_rate']
-    df['waku1_A1'] = 1 if waku1['grade_num'] == 4 else 0
-    df['waku1_A2'] = 1 if waku1['grade_num'] == 3 else 0
-    df['vs_waku1'] = df['national_win_rate'] - waku1['national_win_rate']
-    df['vs_race_max'] = df['national_win_rate'] - df['national_win_rate'].max()
     df['in_win3_rate'] = df['course_win3_rate']
     df['in_entry_rate'] = df['course_entry_rate']
     df['avg_win3_all'] = df['course_win3_rate'].mean()
@@ -231,61 +217,53 @@ def build_features(boats, features, before_info, df_racer):
     df['class_num_vs_avg'] = df['class_num'] - df['class_num'].mean()
     df['win3_x_waku'] = df['course_win3_rate'] * df['waku']
     df['st_x_win3'] = df['course_avg_st'] * df['course_win3_rate']
-    df['waku_win_hist'] = 0
-    df['race_grade_level'] = df['grade_num'].mean()
-    df['grade_vs_race'] = df['grade_num'] - df['grade_num'].mean()
-    df['win_rate_diff'] = df['national_win_rate'] - df['local_win_rate']
-    df['machine_score'] = (df['motor_2rate'] + df['boat_2rate']) / 2
-    df['motor_rank_x_waku'] = df['motor_2rate'] * df['waku']
-    df['waku_x_winrate'] = df['waku'] * df['national_win_rate']
-    df['winrate_x_grade'] = df['national_win_rate'] * df['grade_num']
-    df['win_rate_product'] = df['national_win_rate'] * df['local_win_rate']
     for col in features:
         if col not in df.columns:
             df[col] = 0
     return df[features]
 
-def predict_race(X, wakus, m_win, cal_win, m_top2, m_top3):
+def predict_race(X, wakus, m_1st, m_2nd, m_3rd):
+    """独立3モデル（1着・2着・3着）で予測"""
     results = pd.DataFrame({'waku': wakus})
-    raw_win = m_win['model'].predict(X)
-    results['p_1st'] = 0.0
-    for w in range(1, 7):
-        mask = results['waku'] == w
-        raw = raw_win[mask].reshape(-1, 1)
-        results.loc[mask, 'p_1st'] = cal_win['platt_models'][w].predict_proba(raw)[:, 1]
-    raw_t2 = m_top2['model'].predict(X)
-    results['p_top2'] = 0.0
-    for w in range(1, 7):
-        mask = results['waku'] == w
-        raw = raw_t2[mask].reshape(-1, 1)
-        results.loc[mask, 'p_top2'] = m_top2['platt_models'][w].predict_proba(raw)[:, 1]
-    raw_t3 = m_top3['model'].predict(X)
-    results['p_top3'] = 0.0
-    for w in range(1, 7):
-        mask = results['waku'] == w
-        raw = raw_t3[mask].reshape(-1, 1)
-        results.loc[mask, 'p_top3'] = m_top3['platt_models'][w].predict_proba(raw)[:, 1]
-    s1 = results['p_1st'].sum()
-    if s1 > 0: results['p_1st'] /= s1
-    s2 = results['p_top2'].sum()
-    if s2 > 0: results['p_top2'] = results['p_top2'] / s2 * 2.0
-    s3 = results['p_top3'].sum()
-    if s3 > 0: results['p_top3'] = results['p_top3'] / s3 * 3.0
-    results['p_top2'] = results[['p_top2', 'p_1st']].max(axis=1).clip(upper=1.0)
-    results['p_top3'] = results[['p_top3', 'p_top2']].max(axis=1).clip(upper=1.0)
-    results['p_2nd'] = results['p_top2'] - results['p_1st']
-    results['p_3rd'] = results['p_top3'] - results['p_top2']
+    
+    for target, model_dict, col in [('1着', m_1st, 'p_1st'),
+                                      ('2着', m_2nd, 'p_2nd'),
+                                      ('3着', m_3rd, 'p_3rd')]:
+        raw = model_dict['model'].predict(X)
+        results[col] = 0.0
+        for w in range(1, 7):
+            mask = results['waku'] == w
+            if mask.sum() == 0:
+                continue
+            results.loc[mask, col] = model_dict['platt_models'][w].predict_proba(
+                raw[mask.values].reshape(-1, 1))[:, 1]
+    
+    # 各着順を正規化（合計=1）
+    for col in ['p_1st', 'p_2nd', 'p_3rd']:
+        s = results[col].sum()
+        if s > 0:
+            results[col] /= s
+    
+    # 3連対率 = 1着率 + 2着率 + 3着率
+    results['p_top3'] = results['p_1st'] + results['p_2nd'] + results['p_3rd']
+    
     return results
 
 def calc_combinations(results):
+    """独立3モデルに対応した組み合わせ確率計算"""
     wakus = results['waku'].values
     p1 = dict(zip(wakus, results['p_1st'].values))
     p2 = dict(zip(wakus, results['p_2nd'].values))
     p3 = dict(zip(wakus, results['p_3rd'].values))
+    
+    # 各着順を再正規化
     for d in [p1, p2, p3]:
         s = sum(d.values())
         if s > 0:
-            for k in d: d[k] /= s
+            for k in d:
+                d[k] /= s
+    
+    # 3連単: 条件付き確率で計算
     trifecta = {}
     for perm in permutations(wakus, 3):
         w1, w2, w3 = perm
@@ -300,27 +278,35 @@ def calc_combinations(results):
     total = sum(trifecta.values())
     if total > 0:
         trifecta = {k: v / total for k, v in trifecta.items()}
+    
+    # 2連単: 3連単から集約
     exacta = {}
     for perm in permutations(wakus, 2):
         w1, w2 = perm
         exacta[f"{w1}-{w2}"] = sum(trifecta.get(f"{w1}-{w2}-{w3}", 0)
                                    for w3 in wakus if w3 != w1 and w3 != w2)
+    
+    # 3連複: 3連単から集約
     trio = {}
     for comb in combinations(wakus, 3):
         key = "-".join(map(str, sorted(comb)))
         trio[key] = sum(trifecta.get(f"{a}-{b}-{c}", 0)
                        for a, b, c in permutations(comb))
+    
     return trifecta, exacta, trio
 
 def main():
     st.title("🚤 競艇AI予想")
-    st.caption("3モデル体制（1着・2連対・3連対）× Plattキャリブレーション")
+    st.caption("独立3モデル体制（1着・2着・3着）× Plattキャリブレーション")
     try:
-        m_win, cal_win, m_top2, m_top3, df_racer = load_models()
-        features = m_win['features']
+        m_1st, m_2nd, m_3rd, df_racer = load_models()
+        features = m_1st['features']
     except Exception as e:
         st.error(f"モデルロードエラー: {e}")
-        st.info("modelsフォルダに必要なファイルを配置してください")
+        st.info("必要なファイル: boatrace_model_1着_independent_full.pkl, "
+                "boatrace_model_2着_independent_full.pkl, "
+                "boatrace_model_3着_independent_full.pkl, "
+                "racer_course_data.csv")
         return
     st.sidebar.header("🎯 レース選択")
     place = st.sidebar.selectbox("場所", list(PLACE_CODES.keys()), index=15)
@@ -363,21 +349,20 @@ def main():
         st.dataframe(pd.DataFrame(entry_data), use_container_width=True, hide_index=True)
         with st.spinner("🔧 AI予測計算中..."):
             X = build_features(boats, features, before_info, df_racer)
-            results = predict_race(X, [b['waku'] for b in boats], m_win, cal_win, m_top2, m_top3)
+            results = predict_race(X, [b['waku'] for b in boats], m_1st, m_2nd, m_3rd)
             trifecta, exacta, trio = calc_combinations(results)
         st.header("🎯 着順別確率")
         prob_data = []
         for _, row in results.iterrows():
             w = int(row['waku'])
             name = boats[w-1].get('name', '?')
-            top3 = row['p_1st'] + row['p_2nd'] + row['p_3rd']
             prob_data.append({
                 '枠': f"{WAKU_COLORS.get(w, '')} {w}",
                 '名前': name,
                 '1着率': f"{row['p_1st']:.1%}",
                 '2着率': f"{row['p_2nd']:.1%}",
                 '3着率': f"{row['p_3rd']:.1%}",
-                '3連対率': f"{top3:.1%}",
+                '3連対率': f"{row['p_top3']:.1%}",
             })
         st.dataframe(pd.DataFrame(prob_data), use_container_width=True, hide_index=True)
         sorted_3t = sorted(trifecta.items(), key=lambda x: -x[1])
@@ -412,9 +397,9 @@ def main():
                 data_3f.append({'順位': i, '組み合わせ': combo, '確率': f"{prob:.2%}"})
             st.dataframe(pd.DataFrame(data_3f), use_container_width=True, hide_index=True)
         st.divider()
-        st.caption("📊 モデル: LightGBM v5 (43特徴量) × 3モデル体制 | "
-                   "キャリブレーション: Platt (ECE < 1%) | "
-                   f"バックテスト: 10,450レース 3連単TOP1 ROI 91.8%")
+        st.caption("📊 モデル: LightGBM 独立3モデル (43特徴量) | "
+                   "キャリブレーション: Platt (枠別) | "
+                   f"バックテスト: 10,151レース 3連単TOP1≥10% ROI 141.3%")
 
 if __name__ == '__main__':
     main()
