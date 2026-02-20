@@ -69,37 +69,25 @@ def fetch_race_data(jcd, hd, rno):
             boat['weight'] = float(weight_match.group(1))
         line_tds = tbody.select('td.is-lineH2')
         if len(line_tds) >= 5:
-            def parse_rates(text):
-                return re.findall(r'(\d{1,2}\.\d{2})', text)
+            pat = r'(\d{1,2}\.\d{2})'
             st_text = line_tds[0].get_text(strip=True)
             st_match = re.search(r'(\d+\.\d+)$', st_text)
             if st_match:
                 boat['avg_st'] = float(st_match.group(1))
-            nat_text = line_tds[1].get_text(strip=True)
-            nat_match = re.match(r'(\d\.\d{2})(.*)', nat_text)
-            if nat_match:
-                boat['national_win_rate'] = float(nat_match.group(1))
-                rest_nums = parse_rates(nat_match.group(2))
-                if len(rest_nums) >= 1:
-                    boat['national_2rate'] = float(rest_nums[0])
-            loc_text = line_tds[2].get_text(strip=True)
-            loc_match = re.match(r'(\d\.\d{2})(.*)', loc_text)
-            if loc_match:
-                boat['local_win_rate'] = float(loc_match.group(1))
-                rest_nums = parse_rates(loc_match.group(2))
-                if len(rest_nums) >= 1:
-                    boat['local_2rate'] = float(rest_nums[0])
-            else:
-                loc_nums = parse_rates(loc_text)
-                if len(loc_nums) >= 2:
-                    boat['local_win_rate'] = float(loc_nums[0])
-                    boat['local_2rate'] = float(loc_nums[1])
-            motor_text = line_tds[3].get_text(strip=True)
-            motor_nums = parse_rates(motor_text)
+            nat_nums = re.findall(pat, line_tds[1].get_text(strip=True))
+            if len(nat_nums) >= 1:
+                boat['national_win_rate'] = float(nat_nums[0])
+            if len(nat_nums) >= 2:
+                boat['national_2rate'] = float(nat_nums[1])
+            loc_nums = re.findall(pat, line_tds[2].get_text(strip=True))
+            if len(loc_nums) >= 1:
+                boat['local_win_rate'] = float(loc_nums[0])
+            if len(loc_nums) >= 2:
+                boat['local_2rate'] = float(loc_nums[1])
+            motor_nums = re.findall(pat, line_tds[3].get_text(strip=True))
             if len(motor_nums) >= 1:
                 boat['motor_2rate'] = float(motor_nums[0])
-            boat_text = line_tds[4].get_text(strip=True)
-            boat_nums = parse_rates(boat_text)
+            boat_nums = re.findall(pat, line_tds[4].get_text(strip=True))
             if len(boat_nums) >= 1:
                 boat['boat_2rate'] = float(boat_nums[0])
         boats.append(boat)
@@ -223,9 +211,7 @@ def build_features(boats, features, before_info, df_racer):
     return df[features]
 
 def predict_race(X, wakus, m_1st, m_2nd, m_3rd):
-    """独立3モデル（1着・2着・3着）で予測"""
     results = pd.DataFrame({'waku': wakus})
-    
     for target, model_dict, col in [('1着', m_1st, 'p_1st'),
                                       ('2着', m_2nd, 'p_2nd'),
                                       ('3着', m_3rd, 'p_3rd')]:
@@ -237,33 +223,23 @@ def predict_race(X, wakus, m_1st, m_2nd, m_3rd):
                 continue
             results.loc[mask, col] = model_dict['platt_models'][w].predict_proba(
                 raw[mask.values].reshape(-1, 1))[:, 1]
-    
-    # 各着順を正規化（合計=1）
     for col in ['p_1st', 'p_2nd', 'p_3rd']:
         s = results[col].sum()
         if s > 0:
             results[col] /= s
-    
-    # 3連対率 = 1着率 + 2着率 + 3着率
     results['p_top3'] = results['p_1st'] + results['p_2nd'] + results['p_3rd']
-    
     return results
 
 def calc_combinations(results):
-    """独立3モデルに対応した組み合わせ確率計算"""
     wakus = results['waku'].values
     p1 = dict(zip(wakus, results['p_1st'].values))
     p2 = dict(zip(wakus, results['p_2nd'].values))
     p3 = dict(zip(wakus, results['p_3rd'].values))
-    
-    # 各着順を再正規化
     for d in [p1, p2, p3]:
         s = sum(d.values())
         if s > 0:
             for k in d:
                 d[k] /= s
-    
-    # 3連単: 条件付き確率で計算
     trifecta = {}
     for perm in permutations(wakus, 3):
         w1, w2, w3 = perm
@@ -278,21 +254,16 @@ def calc_combinations(results):
     total = sum(trifecta.values())
     if total > 0:
         trifecta = {k: v / total for k, v in trifecta.items()}
-    
-    # 2連単: 3連単から集約
     exacta = {}
     for perm in permutations(wakus, 2):
         w1, w2 = perm
         exacta[f"{w1}-{w2}"] = sum(trifecta.get(f"{w1}-{w2}-{w3}", 0)
                                    for w3 in wakus if w3 != w1 and w3 != w2)
-    
-    # 3連複: 3連単から集約
     trio = {}
     for comb in combinations(wakus, 3):
         key = "-".join(map(str, sorted(comb)))
         trio[key] = sum(trifecta.get(f"{a}-{b}-{c}", 0)
                        for a, b, c in permutations(comb))
-    
     return trifecta, exacta, trio
 
 def main():
