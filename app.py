@@ -79,7 +79,7 @@ def fetch_race_data(jcd, hd, rno):
             boat_nums = re.findall(pat, line_tds[4].get_text(strip=True))
             if len(boat_nums) >= 1: boat['boat_2rate'] = float(boat_nums[0])
         boats.append(boat)
-          st.write("DEBUG boats:", boats)
+    st.write("DEBUG boats:", boats)
     return boats
 
 
