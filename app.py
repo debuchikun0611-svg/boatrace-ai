@@ -24,6 +24,13 @@ GRADE_COLORS = {'A1': '🔴', 'A2': '🟠', 'B1': '🔵', 'B2': '⚪'}
 WAKU_COLORS = {1: '⬜', 2: '⬛', 3: '🟥', 4: '🟦', 5: '🟨', 6: '🟩'}
 
 
+def kelly(p, odds):
+    if odds <= 1 or p <= 0:
+        return 0
+    f = (p * odds - 1) / (odds - 1)
+    return max(0, f)
+
+
 @st.cache_resource
 def load_models():
     base = './'
@@ -329,8 +336,18 @@ def derive_all_probs(trifecta, results):
     for comb in combinations(sorted(wakus), 3):
         key = "=".join(map(str, comb))
         trio[key] = sum(trifecta.get(f"{a}-{b}-{c}", 0) for a, b, c in permutations(comb))
+    wide = {}
+    for comb in combinations(sorted(wakus), 2):
+        w1, w2 = comb
+        key = f"{w1}-{w2}"
+        p = 0
+        for perm in permutations(wakus, 3):
+            a, b, c = perm
+            if (w1 in (a, b, c)) and (w2 in (a, b, c)):
+                p += trifecta.get(f"{a}-{b}-{c}", 0)
+        wide[key] = p
     return {'win': win, 'place': place, 'exacta': exacta,
-            'quinella': quinella, 'trifecta': trifecta, 'trio': trio}
+            'quinella': quinella, 'trifecta': trifecta, 'trio': trio, 'wide': wide}
 
 
 def calc_synthetic_odds(trifecta_odds):
@@ -392,13 +409,25 @@ def calc_synthetic_odds(trifecta_odds):
                       if trifecta_odds.get(f"{a}-{b}-{c}", 0) > 0)
         trio_odds[f"{w1}={w2}={w3}"] = 1 / inv_sum if inv_sum > 0 else 0
     result['trio'] = trio_odds
+    wide_odds = {}
+    for comb in combinations(wakus, 2):
+        w1, w2 = sorted(comb)
+        inv_sum = 0
+        for perm in permutations(wakus, 3):
+            a, b, c = perm
+            if (w1 in (a, b, c)) and (w2 in (a, b, c)):
+                o = trifecta_odds.get(f"{a}-{b}-{c}", 0)
+                if o > 0:
+                    inv_sum += 1 / o
+        wide_odds[f"{w1}-{w2}"] = 1 / inv_sum if inv_sum > 0 else 0
+    result['wide'] = wide_odds
     result['trifecta'] = trifecta_odds
     return result
 
 
 def main():
     st.title("🚤 競艇AI予想 v9")
-    st.caption("1着・2連対・3連対 LightGBM × 全体Platt | 全券種確率＋3連単オッズ合成期待値")
+    st.caption("1着・2連対・3連対 LightGBM × 全体Platt | 全券種確率＋期待値＋ケリー基準")
 
     try:
         models, df_racer = load_models()
@@ -423,9 +452,6 @@ def main():
     if st.sidebar.button("🎯 予想する", type="primary", use_container_width=True):
         with st.spinner("📋 出走表取得中..."):
             boats = fetch_race_data(jcd, hd, str(race_num))
-
-        # デバッグ表示（問題が解決したら削除）
-        st.write("DEBUG boats:", boats)
 
         if len(boats) < 6:
             st.error("❌ 出走表の取得に失敗しました。")
@@ -472,31 +498,20 @@ def main():
             trifecta = calc_trifecta_probs(results)
             all_probs = derive_all_probs(trifecta, results)
 
-        st.header("🎯 着順別確率・単勝・複勝")
+        st.header("🎯 着順別確率")
         main_data = []
         for _, row in results.iterrows():
             w = int(row['waku'])
             name = boats[w - 1].get('name', '?')
-            d = {
+            main_data.append({
                 '枠': f"{WAKU_COLORS.get(w, '')} {w}",
                 '名前': name,
-                '単勝(=1着率)': f"{row['p_1着']:.1%}",
-            }
-            if has_odds:
-                wo = synthetic_odds['win'].get(str(w), 0)
-                ev_w = row['p_1着'] * wo if wo > 0 else 0
-                d['単勝合成ｵｯｽﾞ'] = f"{wo:.1f}" if wo > 0 else '-'
-                d['単勝期待値'] = f"{ev_w:.2f}"
-            d['複勝(=2連対率)'] = f"{row['p_2連対'] / 2:.1%}"
-            if has_odds:
-                po = synthetic_odds['place'].get(str(w), 0)
-                ev_p = (row['p_2連対'] / 2) * po if po > 0 else 0
-                d['複勝合成ｵｯｽﾞ'] = f"{po:.1f}" if po > 0 else '-'
-                d['複勝期待値'] = f"{ev_p:.2f}"
-            d['2着率'] = f"{row['p_2着']:.1%}"
-            d['3着率'] = f"{row['p_3着']:.1%}"
-            d['3連対率'] = f"{row['p_3連対']:.1%}"
-            main_data.append(d)
+                '1着率': f"{row['p_1着']:.1%}",
+                '2着率': f"{row['p_2着']:.1%}",
+                '3着率': f"{row['p_3着']:.1%}",
+                '2連対率': f"{row['p_2連対']:.1%}",
+                '3連対率': f"{row['p_3連対']:.1%}",
+            })
         st.dataframe(pd.DataFrame(main_data), use_container_width=True, hide_index=True)
 
         st.header("🥈 2連単・2連複")
@@ -510,9 +525,10 @@ def main():
                 if has_odds:
                     o = synthetic_odds['exacta'].get(combo, 0)
                     ev = prob * o if o > 0 else 0
+                    k = kelly(prob, o)
                     d['合成ｵｯｽﾞ'] = f"{o:.1f}" if o > 0 else '-'
                     d['期待値'] = f"{ev:.2f}"
-                    d[''] = '🔥' if ev >= 1.2 else ('✅' if ev >= 1.0 else '')
+                    d['Kelly'] = f"{k:.1%}" if k > 0 else '-'
                 ex_data.append(d)
             st.dataframe(pd.DataFrame(ex_data), use_container_width=True, hide_index=True)
         with col_q:
@@ -524,11 +540,27 @@ def main():
                 if has_odds:
                     o = synthetic_odds['quinella'].get(combo, 0)
                     ev = prob * o if o > 0 else 0
+                    k = kelly(prob, o)
                     d['合成ｵｯｽﾞ'] = f"{o:.1f}" if o > 0 else '-'
                     d['期待値'] = f"{ev:.2f}"
-                    d[''] = '🔥' if ev >= 1.2 else ('✅' if ev >= 1.0 else '')
+                    d['Kelly'] = f"{k:.1%}" if k > 0 else '-'
                 q_data.append(d)
             st.dataframe(pd.DataFrame(q_data), use_container_width=True, hide_index=True)
+
+        st.header("🎫 拡連複（ワイド）")
+        sorted_wide = sorted(all_probs['wide'].items(), key=lambda x: -x[1])
+        wide_data = []
+        for i, (combo, prob) in enumerate(sorted_wide[:top_n], 1):
+            d = {'順位': i, '組み合わせ': combo, '確率': f"{prob:.2%}"}
+            if has_odds:
+                o = synthetic_odds['wide'].get(combo, 0)
+                ev = prob * o if o > 0 else 0
+                k = kelly(prob, o)
+                d['合成ｵｯｽﾞ'] = f"{o:.1f}" if o > 0 else '-'
+                d['期待値'] = f"{ev:.2f}"
+                d['Kelly'] = f"{k:.1%}" if k > 0 else '-'
+            wide_data.append(d)
+        st.dataframe(pd.DataFrame(wide_data), use_container_width=True, hide_index=True)
 
         st.header("🥇 3連単・3連複")
         sorted_3t = sorted(trifecta.items(), key=lambda x: -x[1])
@@ -551,9 +583,10 @@ def main():
                 if has_odds:
                     o = trifecta_odds_raw.get(combo, 0)
                     ev = prob * o if o > 0 else 0
+                    k = kelly(prob, o)
                     d['ｵｯｽﾞ'] = f"{o:.1f}" if o > 0 else '-'
                     d['期待値'] = f"{ev:.2f}"
-                    d[''] = '🔥' if ev >= 1.2 else ('✅' if ev >= 1.0 else '')
+                    d['Kelly'] = f"{k:.1%}" if k > 0 else '-'
                 data_3t.append(d)
             st.dataframe(pd.DataFrame(data_3t), use_container_width=True, hide_index=True)
         with col_3f:
@@ -565,9 +598,10 @@ def main():
                 if has_odds:
                     o = synthetic_odds['trio'].get(combo, 0)
                     ev = prob * o if o > 0 else 0
+                    k = kelly(prob, o)
                     d['合成ｵｯｽﾞ'] = f"{o:.1f}" if o > 0 else '-'
                     d['期待値'] = f"{ev:.2f}"
-                    d[''] = '🔥' if ev >= 1.2 else ('✅' if ev >= 1.0 else '')
+                    d['Kelly'] = f"{k:.1%}" if k > 0 else '-'
                 data_3f.append(d)
             st.dataframe(pd.DataFrame(data_3f), use_container_width=True, hide_index=True)
 
@@ -575,8 +609,8 @@ def main():
             st.header("💰 期待値ランキング TOP20")
             all_ev = []
             bet_labels = {
-                'win': '単勝', 'place': '複勝', 'exacta': '2連単',
-                'quinella': '2連複', 'trifecta': '3連単', 'trio': '3連複',
+                'exacta': '2連単', 'quinella': '2連複', 'wide': '拡連複',
+                'trifecta': '3連単', 'trio': '3連複',
             }
             for bt, label in bet_labels.items():
                 prob_dict = all_probs[bt]
@@ -585,16 +619,45 @@ def main():
                     o = odds_dict.get(key, 0)
                     if o > 0 and prob > 0:
                         ev = prob * o
+                        k = kelly(prob, o)
                         all_ev.append({
                             '券種': label, '組み合わせ': key,
                             '確率': f"{prob:.2%}", 'ｵｯｽﾞ': f"{o:.1f}",
-                            '期待値': ev,
+                            '期待値': ev, 'Kelly_val': k,
                         })
             all_ev.sort(key=lambda x: -x['期待値'])
             for item in all_ev[:20]:
-                item[''] = '🔥' if item['期待値'] >= 1.2 else ('✅' if item['期待値'] >= 1.0 else '')
                 item['期待値'] = f"{item['期待値']:.2f}"
+                item['Kelly'] = f"{item['Kelly_val']:.1%}" if item['Kelly_val'] > 0 else '-'
+                del item['Kelly_val']
             st.dataframe(pd.DataFrame(all_ev[:20]), use_container_width=True, hide_index=True)
+
+            st.header("🎯 ケリー基準ランキング TOP20")
+            all_kelly = []
+            for bt, label in bet_labels.items():
+                prob_dict = all_probs[bt]
+                odds_dict = trifecta_odds_raw if bt == 'trifecta' else synthetic_odds[bt]
+                for key, prob in prob_dict.items():
+                    o = odds_dict.get(key, 0)
+                    if o > 0 and prob > 0:
+                        k = kelly(prob, o)
+                        if k > 0:
+                            ev = prob * o
+                            all_kelly.append({
+                                '券種': label, '組み合わせ': key,
+                                '確率': f"{prob:.2%}", 'ｵｯｽﾞ': f"{o:.1f}",
+                                '期待値': f"{ev:.2f}",
+                                'Kelly_val': k,
+                            })
+            all_kelly.sort(key=lambda x: -x['Kelly_val'])
+            for item in all_kelly[:20]:
+                item['Kelly'] = f"{item['Kelly_val']:.1%}"
+                item['推奨割合'] = f"資金の{item['Kelly_val']:.1%}"
+                del item['Kelly_val']
+            if all_kelly:
+                st.dataframe(pd.DataFrame(all_kelly[:20]), use_container_width=True, hide_index=True)
+            else:
+                st.info("ケリー基準 > 0 の買い目はありません（全て期待値 < 1.0）")
 
         st.divider()
         st.caption(
