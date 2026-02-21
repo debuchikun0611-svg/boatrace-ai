@@ -1,4 +1,4 @@
-app_code = """import streamlit as st
+import streamlit as st
 import pandas as pd
 import numpy as np
 import pickle
@@ -535,9 +535,3 @@ def main():
 
 if __name__ == '__main__':
     main()
-"""
-
-# 保存
-with open('/content/drive/MyDrive/boatrace/app.py', 'w', encoding='utf-8') as f:
-    f.write(app_code)
-print(f"✅ app.py 保存完了 ({len(app_code)}文字, {len(app_code.splitlines())}行)")
