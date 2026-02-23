@@ -310,7 +310,6 @@ def build_features(boats, features, before_info, df_racer):
 
 def predict_race(X, wakus, models):
     results = pd.DataFrame({'waku': wakus})
-    # 各モデルの生確率を取得
     for target_name in ['1着', '2連対', '3連対']:
         md = models[target_name]
         raw = md['model'].predict(X)
@@ -320,20 +319,6 @@ def predict_race(X, wakus, models):
             results[f'p_{target_name}'] = platt / s
         else:
             results[f'p_{target_name}'] = 1.0 / 6
-    # 整合性制約: 1着 <= 2連対 <= 3連対
-    # まず生の確率比を保ったまま整合性を確保
-    results['p_2連対'] = np.maximum(results['p_2連対'], results['p_1着'])
-    results['p_3連対'] = np.maximum(results['p_3連対'], results['p_2連対'])
-    # 表示用に合計100%に正規化（相対的な強さの比較用）
-    s2 = results['p_2連対'].sum()
-    if s2 > 0:
-        results['p_2連対'] = results['p_2連対'] / s2
-    s3 = results['p_3連対'].sum()
-    if s3 > 0:
-        results['p_3連対'] = results['p_3連対'] / s3
-    # 再正規化後も整合性を保証
-    results['p_2連対'] = np.maximum(results['p_2連対'], results['p_1着'])
-    results['p_3連対'] = np.maximum(results['p_3連対'], results['p_2連対'])
     return results
 
 
