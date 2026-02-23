@@ -321,16 +321,17 @@ def predict_race(X, wakus, models):
         else:
             results[f'p_{target_name}'] = 1.0 / 6
     # 整合性制約: 1着 <= 2連対 <= 3連対
+    # まず生の確率比を保ったまま整合性を確保
     results['p_2連対'] = np.maximum(results['p_2連対'], results['p_1着'])
     results['p_3連対'] = np.maximum(results['p_3連対'], results['p_2連対'])
-    # 2連対・3連対を再正規化（合計=2.0, 3.0）
+    # 表示用に合計100%に正規化（相対的な強さの比較用）
     s2 = results['p_2連対'].sum()
     if s2 > 0:
-        results['p_2連対'] = results['p_2連対'] / s2 * 2.0
+        results['p_2連対'] = results['p_2連対'] / s2
     s3 = results['p_3連対'].sum()
     if s3 > 0:
-        results['p_3連対'] = results['p_3連対'] / s3 * 3.0
-    # 再度整合性を保証（再正規化で微小な逆転が起きる場合）
+        results['p_3連対'] = results['p_3連対'] / s3
+    # 再正規化後も整合性を保証
     results['p_2連対'] = np.maximum(results['p_2連対'], results['p_1着'])
     results['p_3連対'] = np.maximum(results['p_3連対'], results['p_2連対'])
     return results
