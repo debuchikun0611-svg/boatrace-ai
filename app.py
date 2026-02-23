@@ -1,3 +1,7 @@
+# app.pyを直接書き出し（文字列リテラル問題を回避）
+import textwrap
+
+app_code = textwrap.dedent("""\
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -95,13 +99,17 @@ def fetch_beforeinfo(jcd, hd, rno):
             boat_color = tr.select_one('td[class*="is-boatColor"]')
             if boat_color:
                 tds = tr.select('td')
-                try: waku = int(boat_color.get_text(strip=True))
-                except: continue
+                try:
+                    waku = int(boat_color.get_text(strip=True))
+                except:
+                    continue
                 if len(tds) >= 5:
                     try:
                         et_val = float(tds[4].get_text(strip=True))
-                        if 5.5 <= et_val <= 8.5: info[f'et_{waku}'] = et_val
-                    except: pass
+                        if 5.5 <= et_val <= 8.5:
+                            info[f'et_{waku}'] = et_val
+                    except:
+                        pass
     st_table = soup.select_one('table.is-w238')
     if st_table:
         for tr in st_table.select('tr'):
@@ -113,8 +121,12 @@ def fetch_beforeinfo(jcd, hd, rno):
                     course = int(st_match.group(1))
                     is_flying = st_match.group(2) == 'F'
                     st_digits = st_match.group(3)
-                    st_val = float('0' + st_digits) if st_digits.startswith('.') else float('0.' + st_digits)
-                    if is_flying: st_val = -st_val
+                    if st_digits.startswith('.'):
+                        st_val = float('0' + st_digits)
+                    else:
+                        st_val = float('0.' + st_digits)
+                    if is_flying:
+                        st_val = -st_val
                     info[f'st_{course}'] = st_val
     return info
 
@@ -134,7 +146,7 @@ def fetch_trifecta_odds(jcd, hd, rno):
     col_first = {}
     for ci in range(6):
         if ci * 2 < len(ths):
-            boat_class = [c for c in ths[ci*2].get('class', []) if c.startswith('is-boatColor')]
+            boat_class = [c for c in ths[ci * 2].get('class', []) if c.startswith('is-boatColor')]
             if boat_class:
                 col_first[ci] = int(boat_class[0].replace('is-boatColor', ''))
     col_second = {}
@@ -150,8 +162,10 @@ def fetch_trifecta_odds(jcd, hd, rno):
                 col_second[col_idx] = second
                 third = int(tds[td_idx + 1].get_text(strip=True))
                 odds_text = tds[td_idx + 2].get_text(strip=True).replace(',', '')
-                try: odds_val = float(odds_text)
-                except: odds_val = 0
+                try:
+                    odds_val = float(odds_text)
+                except:
+                    odds_val = 0
                 first = col_first.get(col_idx, 0)
                 if first > 0:
                     odds_dict[f"{first}-{second}-{third}"] = odds_val
@@ -160,8 +174,10 @@ def fetch_trifecta_odds(jcd, hd, rno):
             else:
                 third = int(td.get_text(strip=True))
                 odds_text = tds[td_idx + 1].get_text(strip=True).replace(',', '')
-                try: odds_val = float(odds_text)
-                except: odds_val = 0
+                try:
+                    odds_val = float(odds_text)
+                except:
+                    odds_val = 0
                 first = col_first.get(col_idx, 0)
                 second = col_second.get(col_idx, 0)
                 if first > 0 and second > 0:
@@ -172,48 +188,45 @@ def fetch_trifecta_odds(jcd, hd, rno):
 
 
 def derive_all_odds(trifecta_odds):
-    """3連単オッズから2連単/2連複/3連複オッズを算出"""
     wakus = list(range(1, 7))
     result = {'trifecta': dict(trifecta_odds)}
-
-    # 2連単
     exacta_odds = {}
     for a in wakus:
         for b in wakus:
-            if a == b: continue
+            if a == b:
+                continue
             inv_sum = 0
             for c in wakus:
-                if c == a or c == b: continue
+                if c == a or c == b:
+                    continue
                 o = trifecta_odds.get(f'{a}-{b}-{c}', 0)
-                if o > 0: inv_sum += 1.0 / o
+                if o > 0:
+                    inv_sum += 1.0 / o
             if inv_sum > 0:
                 exacta_odds[f'{a}-{b}'] = round(1.0 / inv_sum, 1)
     result['exacta'] = exacta_odds
-
-    # 2連複
     quinella_odds = {}
     for combo in combinations(wakus, 2):
         a, b = combo
         inv_sum = 0
         for k in [f'{a}-{b}', f'{b}-{a}']:
             v = exacta_odds.get(k, 0)
-            if v > 0: inv_sum += 1.0 / v
+            if v > 0:
+                inv_sum += 1.0 / v
         if inv_sum > 0:
             quinella_odds[f'{a}={b}'] = round(1.0 / inv_sum, 1)
     result['quinella'] = quinella_odds
-
-    # 3連複
     trio_odds = {}
     for combo in combinations(wakus, 3):
         a, b, c = combo
         inv_sum = 0
         for perm in permutations(combo):
             o = trifecta_odds.get(f'{perm[0]}-{perm[1]}-{perm[2]}', 0)
-            if o > 0: inv_sum += 1.0 / o
+            if o > 0:
+                inv_sum += 1.0 / o
         if inv_sum > 0:
             trio_odds[f'{a}={b}={c}'] = round(1.0 / inv_sum, 1)
     result['trio'] = trio_odds
-
     return result
 
 
@@ -226,7 +239,9 @@ def build_features(boats, features, before_info, df_racer):
         waku = boat.get('waku', 0)
         toban = boat.get('toban', 0)
         row = {
-            'waku': waku, 'age': boat.get('age', 35), 'weight': boat.get('weight', 52),
+            'waku': waku,
+            'age': boat.get('age', 35),
+            'weight': boat.get('weight', 52),
             'national_win_rate': boat.get('national_win_rate', 0),
             'national_2rate': boat.get('national_2rate', 0),
             'local_win_rate': boat.get('local_win_rate', 0),
@@ -240,15 +255,18 @@ def build_features(boats, features, before_info, df_racer):
         racer_row = df_racer[df_racer['toban'] == toban]
         if len(racer_row) > 0:
             r = racer_row.iloc[0]
-            row['course_entry_rate'] = r.get(f'entry_rate_{waku}', 0) if f'entry_rate_{waku}' in r.index else 0
-            row['course_win3_rate'] = r.get(f'win3_rate_{waku}', 0) if f'win3_rate_{waku}' in r.index else 0
-            row['course_avg_st'] = r.get(f'avg_st_{waku}', 0) if f'avg_st_{waku}' in r.index else 0
+            for col_name, prefix in [('course_entry_rate', 'entry_rate_'),
+                                     ('course_win3_rate', 'win3_rate_'),
+                                     ('course_avg_st', 'avg_st_')]:
+                col_key = f'{prefix}{waku}'
+                row[col_name] = r.get(col_key, 0) if col_key in r.index else 0
         else:
             row['course_entry_rate'] = 0
             row['course_win3_rate'] = 0
             row['course_avg_st'] = 0
         for k in row:
-            if pd.isna(row[k]): row[k] = 0
+            if pd.isna(row[k]):
+                row[k] = 0
         rows.append(row)
     df = pd.DataFrame(rows)
     for col in ['national_win_rate', 'national_2rate', 'motor_2rate', 'boat_2rate']:
@@ -261,7 +279,7 @@ def build_features(boats, features, before_info, df_racer):
     df['win_rate_diff'] = df['national_win_rate'] - df['local_win_rate']
     df['machine_score'] = df['motor_2rate'] + df['boat_2rate']
     df['waku_penalty'] = df['waku'].apply(lambda x: max(0, x - 3))
-    df['waku_win_hist'] = df['waku'].map({1:0.55,2:0.14,3:0.12,4:0.10,5:0.06,6:0.03})
+    df['waku_win_hist'] = df['waku'].map({1: 0.55, 2: 0.14, 3: 0.12, 4: 0.10, 5: 0.06, 6: 0.03})
     df['motor_rank_x_waku'] = df['motor_2rate_rank'] * df['waku']
     df['waku_x_winrate'] = df['waku'] * df['national_win_rate']
     df['winrate_x_grade'] = df['national_win_rate'] * df['grade_num']
@@ -269,7 +287,7 @@ def build_features(boats, features, before_info, df_racer):
     df['win_rate_product'] = df['national_win_rate'] * df['national_2rate']
     df['race_grade_level'] = df['grade_num'].mean()
     df['vs_race_max'] = df['national_win_rate'] - df['national_win_rate'].max()
-    waku1 = df[df['waku']==1].iloc[0] if len(df[df['waku']==1]) > 0 else df.iloc[0]
+    waku1 = df[df['waku'] == 1].iloc[0] if len(df[df['waku'] == 1]) > 0 else df.iloc[0]
     df['waku1_win_rate'] = waku1['national_win_rate']
     df['vs_waku1'] = df['national_win_rate'] - waku1['national_win_rate']
     df['et_rank'] = df['exhibition_time'].rank()
@@ -281,7 +299,8 @@ def build_features(boats, features, before_info, df_racer):
     for col in ['course_entry_rate', 'course_win3_rate', 'course_avg_st']:
         df[f'{col}_vs_avg'] = df[col] - df[col].mean()
     for f in features:
-        if f not in df.columns: df[f] = 0
+        if f not in df.columns:
+            df[f] = 0
     return df[features]
 
 
@@ -310,45 +329,36 @@ def calc_trifecta_probs(results):
         pp1 = p1[w1]
         rest2 = {w: p2[w] for w in wakus if w != w1}
         s2 = sum(rest2.values())
-        pp2 = rest2[w2] / s2 if s2 > 0 else 1/5
+        pp2 = rest2[w2] / s2 if s2 > 0 else 1 / 5
         rest3 = {w: p3[w] for w in wakus if w != w1 and w != w2}
         s3 = sum(rest3.values())
-        pp3 = rest3[w3] / s3 if s3 > 0 else 1/4
+        pp3 = rest3[w3] / s3 if s3 > 0 else 1 / 4
         trifecta[f"{w1}-{w2}-{w3}"] = pp1 * pp2 * pp3
     tp = sum(trifecta.values())
     if tp > 0:
-        trifecta = {k: v/tp for k, v in trifecta.items()}
+        trifecta = {k: v / tp for k, v in trifecta.items()}
     return trifecta
 
 
 def derive_all_probs(trifecta):
-    """3連単確率から2連単/2連複/3連複確率を算出"""
     wakus = list(range(1, 7))
-
-    # 2連単
     exacta = {}
     for perm in permutations(wakus, 2):
         w1, w2 = perm
         exacta[f"{w1}-{w2}"] = sum(trifecta.get(f"{w1}-{w2}-{w3}", 0)
                                     for w3 in wakus if w3 != w1 and w3 != w2)
-
-    # 2連複
     quinella = {}
     for comb in combinations(wakus, 2):
         w1, w2 = comb
         quinella[f"{w1}={w2}"] = exacta.get(f"{w1}-{w2}", 0) + exacta.get(f"{w2}-{w1}", 0)
-
-    # 3連複
     trio = {}
     for comb in combinations(wakus, 3):
         key = "=".join(map(str, comb))
         trio[key] = sum(trifecta.get(f"{a}-{b}-{c}", 0) for a, b, c in permutations(comb))
-
     return {'exacta': exacta, 'quinella': quinella, 'trifecta': trifecta, 'trio': trio}
 
 
 def calc_kelly(prob, odds):
-    """Kelly基準値を計算"""
     if odds <= 1 or prob <= 0:
         return 0
     kelly = (prob * odds - 1) / (odds - 1)
@@ -357,7 +367,7 @@ def calc_kelly(prob, odds):
 
 def main():
     st.title("🚤 競艇AI予想 v10")
-    st.caption("LightGBM v10 × Platt校正 | コース別成績データ強化 | 全券種確率＋Kelly基準＋オッズ合成")
+    st.caption("LightGBM v10 x Platt校正 | コース別成績データ強化 | 全券種確率+Kelly基準+オッズ合成")
 
     try:
         models, df_racer = load_models()
@@ -368,7 +378,6 @@ def main():
                 "boatrace_model_3連対_v10.pkl, racer_course_data_v2.csv")
         return
 
-    # --- サイドバー ---
     st.sidebar.header("🎯 レース選択")
     place = st.sidebar.selectbox("場所", list(PLACE_CODES.keys()), index=15)
     race_num = st.sidebar.selectbox("レース番号", list(range(1, 13)))
@@ -381,15 +390,11 @@ def main():
     jcd = PLACE_CODES[place]
     hd = race_date.strftime('%Y%m%d')
 
-    # --- セッションステートで予測結果・オッズを保持 ---
     if 'prediction_done' not in st.session_state:
         st.session_state.prediction_done = False
-    if 'odds_data' not in st.session_state:
-        st.session_state.odds_data = {}
 
     if st.sidebar.button("🎯 予想する", type="primary", use_container_width=True):
         st.session_state.prediction_done = False
-        st.session_state.odds_data = {}
 
         with st.spinner("📋 出走表取得中..."):
             boats = fetch_race_data(jcd, hd, str(race_num))
@@ -403,7 +408,6 @@ def main():
         with st.spinner("📋 3連単オッズ取得中..."):
             trifecta_odds_raw = fetch_trifecta_odds(jcd, hd, str(race_num))
 
-        # セッションに保存
         st.session_state.boats = boats
         st.session_state.before_info = before_info
         st.session_state.trifecta_odds_raw = trifecta_odds_raw
@@ -414,7 +418,6 @@ def main():
         st.session_state.race_date = race_date
         st.session_state.prediction_done = True
 
-    # --- オッズ再取得ボタン ---
     if st.session_state.prediction_done:
         if st.sidebar.button("🔄 オッズ再取得", use_container_width=True):
             with st.spinner("📋 オッズ再取得中..."):
@@ -423,7 +426,6 @@ def main():
                 st.session_state.trifecta_odds_raw = trifecta_odds_raw
                 st.success(f"✅ オッズ再取得完了 ({len(trifecta_odds_raw)}/120通り)")
 
-    # --- 結果表示 ---
     if not st.session_state.prediction_done:
         st.info("👈 サイドバーからレースを選択して「予想する」を押してください")
         return
@@ -431,50 +433,51 @@ def main():
     boats = st.session_state.boats
     before_info = st.session_state.before_info
     trifecta_odds_raw = st.session_state.trifecta_odds_raw
-    place = st.session_state.place
-    race_num = st.session_state.race_num
-    race_date = st.session_state.race_date
+    place_name = st.session_state.place
+    rnum = st.session_state.race_num
+    rdate = st.session_state.race_date
 
     has_odds = len(trifecta_odds_raw) >= 100
     if has_odds:
         all_odds = derive_all_odds(trifecta_odds_raw)
 
     et_count = sum(1 for k in before_info if k.startswith('et_'))
-    st.header(f"📋 {place} {race_num}R ({race_date})")
+    st.header(f"📋 {place_name} {rnum}R ({rdate})")
     if et_count < 6:
         st.warning(f"⚠️ 展示タイム: {et_count}/6艇取得（レース前は未公開）")
     if not has_odds:
         st.warning(f"⚠️ 3連単オッズ: {len(trifecta_odds_raw)}/120通り（レース前は未公開）")
 
-    # --- 出走表 ---
     entry_data = []
     for b in boats:
         w = b['waku']
         entry_data.append({
-            '枠': f"{WAKU_COLORS.get(w,'')} {w}", '登番': b.get('toban','?'),
-            '名前': b.get('name','?'),
-            '級別': f"{GRADE_COLORS.get(b.get('grade',''),'')} {b.get('grade','?')}",
-            '全国勝率': b.get('national_win_rate',0), '全国2率': b.get('national_2rate',0),
-            'モーター2率': b.get('motor_2rate',0), 'ボート2率': b.get('boat_2rate',0),
-            '展示T': before_info.get(f'et_{w}','-'), 'ST': before_info.get(f'st_{w}','-'),
+            '枠': f"{WAKU_COLORS.get(w, '')} {w}",
+            '登番': b.get('toban', '?'),
+            '名前': b.get('name', '?'),
+            '級別': f"{GRADE_COLORS.get(b.get('grade', ''), '')} {b.get('grade', '?')}",
+            '全国勝率': b.get('national_win_rate', 0),
+            '全国2率': b.get('national_2rate', 0),
+            'モーター2率': b.get('motor_2rate', 0),
+            'ボート2率': b.get('boat_2rate', 0),
+            '展示T': before_info.get(f'et_{w}', '-'),
+            'ST': before_info.get(f'st_{w}', '-'),
         })
     st.dataframe(pd.DataFrame(entry_data), use_container_width=True, hide_index=True)
 
-    # --- AI予測 ---
     with st.spinner("🔧 AI予測計算中..."):
         X = build_features(boats, features, before_info, df_racer)
         results = predict_race(X, [b['waku'] for b in boats], models)
         trifecta = calc_trifecta_probs(results)
         all_probs = derive_all_probs(trifecta)
 
-    # --- 着順確率 ---
     st.header("🎯 着順別確率")
     main_data = []
     for _, row in results.iterrows():
         w = int(row['waku'])
-        name = boats[w-1].get('name', '?')
+        name = boats[w - 1].get('name', '?')
         d = {
-            '枠': f"{WAKU_COLORS.get(w,'')} {w}",
+            '枠': f"{WAKU_COLORS.get(w, '')} {w}",
             '名前': name,
             '1着率': f"{row['p_1着']:.1%}",
             '2連対率': f"{row['p_2連対']:.1%}",
@@ -483,7 +486,6 @@ def main():
         main_data.append(d)
     st.dataframe(pd.DataFrame(main_data), use_container_width=True, hide_index=True)
 
-    # --- 2連単・2連複 ---
     st.header("🥈 2連単・2連複")
     col_e, col_q = st.columns(2)
     with col_e:
@@ -499,7 +501,7 @@ def main():
                 d['ｵｯｽﾞ'] = f"{o:.1f}" if o > 0 else '-'
                 d['期待値'] = f"{ev:.2f}"
                 d['Kelly'] = f"{kelly:.1%}" if kelly > 0 else '-'
-                d[''] = '🔥' if kelly >= 0.03 else ('✅' if kelly > 0 else '')
+                d['判定'] = '🔥' if kelly >= 0.03 else ('✅' if kelly > 0 else '')
             ex_data.append(d)
         st.dataframe(pd.DataFrame(ex_data), use_container_width=True, hide_index=True)
 
@@ -516,11 +518,10 @@ def main():
                 d['ｵｯｽﾞ'] = f"{o:.1f}" if o > 0 else '-'
                 d['期待値'] = f"{ev:.2f}"
                 d['Kelly'] = f"{kelly:.1%}" if kelly > 0 else '-'
-                d[''] = '🔥' if kelly >= 0.03 else ('✅' if kelly > 0 else '')
+                d['判定'] = '🔥' if kelly >= 0.03 else ('✅' if kelly > 0 else '')
             q_data.append(d)
         st.dataframe(pd.DataFrame(q_data), use_container_width=True, hide_index=True)
 
-    # --- 3連単・3連複 ---
     st.header("🥇 3連単・3連複")
     sorted_3t = sorted(trifecta.items(), key=lambda x: -x[1])
     top1_prob = sorted_3t[0][1] if sorted_3t else 0
@@ -546,7 +547,7 @@ def main():
                 d['ｵｯｽﾞ'] = f"{o:.1f}" if o > 0 else '-'
                 d['期待値'] = f"{ev:.2f}"
                 d['Kelly'] = f"{kelly:.1%}" if kelly > 0 else '-'
-                d[''] = '🔥' if kelly >= 0.03 else ('✅' if kelly > 0 else '')
+                d['判定'] = '🔥' if kelly >= 0.03 else ('✅' if kelly > 0 else '')
             data_3t.append(d)
         st.dataframe(pd.DataFrame(data_3t), use_container_width=True, hide_index=True)
 
@@ -563,15 +564,13 @@ def main():
                 d['ｵｯｽﾞ'] = f"{o:.1f}" if o > 0 else '-'
                 d['期待値'] = f"{ev:.2f}"
                 d['Kelly'] = f"{kelly:.1%}" if kelly > 0 else '-'
-                d[''] = '🔥' if kelly >= 0.03 else ('✅' if kelly > 0 else '')
+                d['判定'] = '🔥' if kelly >= 0.03 else ('✅' if kelly > 0 else '')
             data_3f.append(d)
         st.dataframe(pd.DataFrame(data_3f), use_container_width=True, hide_index=True)
 
-    # --- Kelly推奨買い目 ---
     if has_odds:
         st.header("💰 Kelly推奨買い目")
-        st.caption("Kelly基準値 ≥ 1% の買い目（確率×オッズが投資価値あり）")
-
+        st.caption("Kelly基準値 >= 1% の買い目（確率xオッズが投資価値あり）")
         kelly_bets = []
         bet_labels = {'exacta': '2連単', 'quinella': '2連複',
                       'trifecta': '3連単', 'trio': '3連複'}
@@ -584,58 +583,49 @@ def main():
                     kelly = calc_kelly(prob, o)
                     if kelly >= 0.01:
                         kelly_bets.append({
-                            '券種': label, '組み合わせ': key,
-                            '確率': f"{prob:.2%}", 'ｵｯｽﾞ': f"{o:.1f}",
+                            '券種': label,
+                            '組み合わせ': key,
+                            '確率': f"{prob:.2%}",
+                            'ｵｯｽﾞ': f"{o:.1f}",
                             '期待値': prob * o,
                             'Kelly': kelly,
                         })
-
         kelly_bets.sort(key=lambda x: -x['Kelly'])
-
         if kelly_bets:
             for item in kelly_bets:
-                item[''] = '🔥🔥' if item['Kelly'] >= 0.05 else ('🔥' if item['Kelly'] >= 0.03 else '✅')
+                item['判定'] = '🔥🔥' if item['Kelly'] >= 0.05 else ('🔥' if item['Kelly'] >= 0.03 else '✅')
                 item['期待値'] = f"{item['期待値']:.2f}"
                 item['Kelly'] = f"{item['Kelly']:.1%}"
             st.dataframe(pd.DataFrame(kelly_bets), use_container_width=True, hide_index=True)
-
-            # 合計投資額の目安
             total_bets = len(kelly_bets)
             st.info(f"📊 Kelly推奨: {total_bets}点 → 各100円で ¥{total_bets * 100:,}")
         else:
             st.info("このレースにはKelly推奨買い目がありません（見送り推奨）")
 
-    # --- フッター ---
     st.divider()
     st.caption(f"📊 モデル: LightGBM v10 (1着AUC0.853/2連対AUC0.805/3連対AUC0.785) | "
                f"特徴量: {len(features)}個 | コース別成績: {len(df_racer)}選手 | "
-               f"バックテスト: 10,115R 3連単Kelly≥1% ROI256.8%")
+               f"バックテスト: 10,115R 3連単Kelly>=1% ROI256.8%")
 
 
 if __name__ == '__main__':
     main()
-'''
+""")
 
-with open('/content/drive/MyDrive/boatrace/app.py', 'w') as f:
-    f.write(new_app)
+output_path = '/content/drive/MyDrive/boatrace/app.py'
+with open(output_path, 'w', encoding='utf-8') as f:
+    f.write(app_code)
 
-print(f'✅ app.py 更新完了 ({len(new_app)}文字)')
-print()
-print('変更点:')
-print('  1. v9 → v10 モデル読み込み')
-print('  2. racer_course_data.csv → racer_course_data_v2.csv')
-print('  3. オッズ再取得ボタン追加（session_state管理）')
-print('  4. 拡連複（ワイド）・単勝・複勝の表示を削除')
-print('  5. 全券種にKelly基準値を表示')
-print('  6. Kelly推奨買い目セクション新設')
-print('  7. predict_race を正規化ロジック簡素化')
-print('  8. derive_all_odds で3連単から全券種オッズ算出')
-print('  9. User-Agent追加（スクレイピング安定化）')
-print()
-print('デプロイに必要なファイル:')
-print('  - app.py')
-print('  - boatrace_model_1着_v10.pkl')
-print('  - boatrace_model_2連対_v10.pkl')
-print('  - boatrace_model_3連対_v10.pkl')
-print('  - racer_course_data_v2.csv')
-print('  - requirements.txt')
+# 検証
+with open(output_path, 'r', encoding='utf-8') as f:
+    content = f.read()
+
+print(f'✅ app.py 書き出し完了: {len(content)}文字')
+
+# シンタックスチェック
+import py_compile
+try:
+    py_compile.compile(output_path, doraise=True)
+    print('✅ シンタックスチェック OK')
+except py_compile.PyCompileError as e:
+    print(f'❌ シンタックスエラー: {e}')
