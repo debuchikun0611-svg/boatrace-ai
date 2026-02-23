@@ -499,8 +499,8 @@ def main():
             '枠': f"{WAKU_COLORS.get(w, '')} {w}",
             '名前': name,
             '1着率': f"{row['p_1着']:.1%}",
-            '2連対率': f"{row['p_2連対']:.1%}",
-            '3連対率': f"{row['p_3連対']:.1%}",
+            '2連対率': f"{min(row['p_2連対'] / 2, 0.999):.1%}",
+            '3連対率': f"{min(row['p_3連対'] / 3, 0.999):.1%}",
         }
         main_data.append(d)
     st.dataframe(pd.DataFrame(main_data), use_container_width=True, hide_index=True)
