@@ -1,7 +1,3 @@
-# app.pyを直接書き出し（文字列リテラル問題を回避）
-import textwrap
-
-app_code = textwrap.dedent("""\
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -610,22 +606,3 @@ def main():
 
 if __name__ == '__main__':
     main()
-""")
-
-output_path = '/content/drive/MyDrive/boatrace/app.py'
-with open(output_path, 'w', encoding='utf-8') as f:
-    f.write(app_code)
-
-# 検証
-with open(output_path, 'r', encoding='utf-8') as f:
-    content = f.read()
-
-print(f'✅ app.py 書き出し完了: {len(content)}文字')
-
-# シンタックスチェック
-import py_compile
-try:
-    py_compile.compile(output_path, doraise=True)
-    print('✅ シンタックスチェック OK')
-except py_compile.PyCompileError as e:
-    print(f'❌ シンタックスエラー: {e}')
