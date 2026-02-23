@@ -1,5 +1,4 @@
-# 新しいapp.pyを書き出し
-new_app = '''import streamlit as st
+import streamlit as st
 import pandas as pd
 import numpy as np
 import pickle
