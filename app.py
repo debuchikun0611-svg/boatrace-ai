@@ -42,9 +42,17 @@ def fetch_race_data(jcd, hd, rno):
     soup = BeautifulSoup(resp.content, 'html.parser')
     boats = []
     toban_links = soup.select('a[href*="toban"]')
+    st.write(f"DEBUG: status={resp.status_code}, content_len={len(resp.content)}, toban_links={len(toban_links)}")
+    tbodies_debug = soup.select('tbody.is-fs12')
+    st.write(f"DEBUG: tbody.is-fs12={len(tbodies_debug)}")
+    if tbodies_debug:
+        line_tds_debug = tbodies_debug[0].select('td.is-lineH2')
+        st.write(f"DEBUG: td.is-lineH2={len(line_tds_debug)}")
+        if line_tds_debug:
+            st.write(f"DEBUG: td[1]={line_tds_debug[1].get_text(strip=True)[:50] if len(line_tds_debug) > 1 else 'N/A'}")
     tobans = []
     for a in toban_links:
-        m = re.search(r'toban=(\\d+)', a.get('href', ''))
+        m = re.search(r'toban=(\d+)', a.get('href', ''))
         if m:
             t = int(m.group(1))
             if not tobans or tobans[-1] != t:
@@ -59,15 +67,15 @@ def fetch_race_data(jcd, hd, rno):
         full_text = tbody.get_text()
         grade_match = re.search(r'(A1|A2|B1|B2)', full_text)
         if grade_match: boat['grade'] = grade_match.group(1)
-        age_match = re.search(r'(\\d{2})歳', full_text)
+        age_match = re.search(r'(\d{2})歳', full_text)
         if age_match: boat['age'] = int(age_match.group(1))
-        weight_match = re.search(r'([\\d\\.]+)kg', full_text)
+        weight_match = re.search(r'([\d\.]+)kg', full_text)
         if weight_match: boat['weight'] = float(weight_match.group(1))
         line_tds = tbody.select('td.is-lineH2')
         if len(line_tds) >= 5:
-            pat = r'(\\d{1,2}\\.\\d{2})'
+            pat = r'(\d{1,2}\.\d{2})'
             st_text = line_tds[0].get_text(strip=True)
-            st_match = re.search(r'(\\d+\\.\\d+)$', st_text)
+            st_match = re.search(r'(\d+\.\d+)$', st_text)
             if st_match: boat['avg_st'] = float(st_match.group(1))
             nat_nums = re.findall(pat, line_tds[1].get_text(strip=True))
             if len(nat_nums) >= 1: boat['national_win_rate'] = float(nat_nums[0])
@@ -112,7 +120,7 @@ def fetch_beforeinfo(jcd, hd, rno):
             tds = tr.select('td')
             if len(tds) >= 1:
                 txt = tds[0].get_text(strip=True)
-                st_match = re.match(r'^(\\d)(F?)(\\.?\\d{2})$', txt)
+                st_match = re.match(r'^(\d)(F?)(\.?\d{2})$', txt)
                 if st_match:
                     course = int(st_match.group(1))
                     is_flying = st_match.group(2) == 'F'
