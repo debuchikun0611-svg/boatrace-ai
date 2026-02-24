@@ -310,30 +310,15 @@ def build_features(boats, features, before_info, df_racer):
 
 def predict_race(X, wakus, models):
     results = pd.DataFrame({'waku': wakus})
-    target_sums = {'1着': 1.0, '2連対': 2.0, '3連対': 3.0}
-    # 枠番バイアス補正係数（バックテスト10,459レースから算出）
-    WAKU_CORR = {
-        '1着': {1: 1.1990, 2: 1.0878, 3: 1.0861, 4: 0.9484, 5: 0.5884, 6: 0.3033},
-        '2連対': {1: 0.8674, 2: 1.2683, 3: 1.3527, 4: 1.1802, 5: 0.8665, 6: 0.5964},
-        '3連対': {1: 0.7549, 2: 1.1100, 3: 1.2008, 4: 1.1831, 5: 1.1775, 6: 0.9608},
-    }
     for target_name in ['1着', '2連対', '3連対']:
         md = models[target_name]
         raw = md['model'].predict(X)
         platt = md['platt'].predict_proba(raw.reshape(-1, 1))[:, 1]
         s = platt.sum()
         if s > 0:
-            probs = platt / s * target_sums[target_name]
+            results[f'p_{target_name}'] = platt / s
         else:
-            probs = np.ones(len(wakus)) * target_sums[target_name] / len(wakus)
-        # 枠番バイアス補正
-        corr = WAKU_CORR[target_name]
-        corrected = np.array([probs[i] * corr.get(int(wakus[i]), 1.0) for i in range(len(wakus))])
-        # 再正規化
-        cs = corrected.sum()
-        if cs > 0:
-            corrected = corrected / cs * target_sums[target_name]
-        results[f'p_{target_name}'] = corrected
+            results[f'p_{target_name}'] = 1.0 / 6
     return results
 
 
@@ -499,8 +484,8 @@ def main():
             '枠': f"{WAKU_COLORS.get(w, '')} {w}",
             '名前': name,
             '1着率': f"{row['p_1着']:.1%}",
-            '2連対率': f"{min(row['p_2連対'] / 2, 0.999):.1%}",
-            '3連対率': f"{min(row['p_3連対'] / 3, 0.999):.1%}",
+            '2連対率': f"{row['p_2連対']:.1%}",
+            '3連対率': f"{row['p_3連対']:.1%}",
         }
         main_data.append(d)
     st.dataframe(pd.DataFrame(main_data), use_container_width=True, hide_index=True)
@@ -629,4 +614,3 @@ def main():
 
 if __name__ == '__main__':
     main()
-
