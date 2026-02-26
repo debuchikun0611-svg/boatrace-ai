@@ -9,7 +9,7 @@ from itertools import permutations, combinations
 import warnings
 warnings.filterwarnings('ignore')
 
-st.set_page_config(page_title="競艇AI予想 v11", page_icon="🚤", layout="wide")
+st.set_page_config(page_title="競艇AI予想 v12", page_icon="🚤", layout="wide")
 
 # =============================================================================
 # 定数
@@ -26,7 +26,6 @@ GRADE_MAP = {'A1': 4, 'A2': 3, 'B1': 2, 'B2': 1}
 GRADE_COLORS = {'A1': '🔴', 'A2': '🟠', 'B1': '🔵', 'B2': '⚪'}
 WAKU_COLORS = {1: '⬜', 2: '⬛', 3: '🟥', 4: '🟦', 5: '🟨', 6: '🟩'}
 
-# 学習データから算出した場別統計
 PLACE_W1_WINRATE = {
     '大村': 0.6238, '徳山': 0.6220, '下関': 0.6040, '住之江': 0.6026,
     '尼崎': 0.5992, '常滑': 0.5894, '芦屋': 0.5858, '若松': 0.5750,
@@ -37,7 +36,6 @@ PLACE_W1_WINRATE = {
 }
 PLACE_UPSET_RATE = {k: 1.0 - v for k, v in PLACE_W1_WINRATE.items()}
 
-# 学習時のplace_codeマッピング（学習データの出現順）
 PLACE_CODE_MAP = {
     '唐津': 0, '若松': 1, '下関': 2, '徳山': 3, '丸亀': 4, '尼崎': 5,
     'びわこ': 6, '津': 7, '蒲郡': 8, '浜名湖': 9, '平和島': 10, '戸田': 11,
@@ -54,16 +52,16 @@ WAKU_WIN_HIST = {1: 0.55, 2: 0.14, 3: 0.12, 4: 0.10, 5: 0.06, 6: 0.03}
 @st.cache_resource
 def load_models():
     base = './'
-    # v3 1着特化モデル
     with open(base + 'win_model_v3.pkl', 'rb') as f:
         win_model = pickle.load(f)
-    # コース別成績データ
+    with open(base + 'exacta_model_v2.pkl', 'rb') as f:
+        exacta_model = pickle.load(f)
     df_racer = pd.read_csv(base + 'racer_course_data_v2.csv')
-    return win_model, df_racer
+    return win_model, exacta_model, df_racer
 
 
 # =============================================================================
-# データ取得関数（変更なし）
+# データ取得関数
 # =============================================================================
 def fetch_race_data(jcd, hd, rno):
     url = f"https://www.boatrace.jp/owpc/pc/race/racelist?rno={rno}&jcd={jcd}&hd={hd}"
@@ -119,7 +117,6 @@ def fetch_beforeinfo(jcd, hd, rno):
     resp = requests.get(url, headers=headers, timeout=15)
     soup = BeautifulSoup(resp.content, 'html.parser')
     info = {}
-    # 展示タイム
     main_table = soup.select_one('table.is-w748')
     if main_table:
         for tr in main_table.select('tr'):
@@ -137,7 +134,6 @@ def fetch_beforeinfo(jcd, hd, rno):
                             info[f'et_{waku}'] = et_val
                     except:
                         pass
-    # スタート展示 → コース進入も取得
     st_table = soup.select_one('table.is-w238')
     if st_table:
         course_pos = 0
@@ -219,7 +215,7 @@ def fetch_trifecta_odds(jcd, hd, rno):
 
 
 # =============================================================================
-# オッズ合成関数
+# オッズ合成
 # =============================================================================
 def derive_all_odds(trifecta_odds):
     wakus = list(range(1, 7))
@@ -251,7 +247,6 @@ def derive_all_odds(trifecta_odds):
         if inv_sum > 0:
             trio_odds[f'{a}={b}={c}'] = round(1.0 / inv_sum, 1)
     result['trio'] = trio_odds
-    # 合成単勝オッズ
     win_odds = {}
     for w in wakus:
         inv_sum = sum(1.0 / trifecta_odds.get(f'{w}-{b}-{c}', 0)
@@ -265,22 +260,17 @@ def derive_all_odds(trifecta_odds):
 
 
 # =============================================================================
-# v3特徴量構築（95特徴量完全再現）
+# v3特徴量構築（1着モデル用・95特徴量）
 # =============================================================================
 def build_features_v3(boats, features, before_info, df_racer, place_name):
     n = len(boats)
     rows = []
-
-    # 展示タイム・ST取得
     et_list = [before_info.get(f'et_{i+1}', 0) for i in range(n)]
     et_valid = [v for v in et_list if v > 0]
     et_mean = np.mean(et_valid) if et_valid else 6.80
-    et_std = np.std(et_valid) if len(et_valid) > 1 else 0.1
-
     st_list = [before_info.get(f'st_{i+1}', 0.15) for i in range(n)]
     st_mean = np.mean(st_list)
     st_std = np.std(st_list) if np.std(st_list) > 0 else 0.01
-    st_best = min(st_list)
 
     for boat in boats:
         waku = boat.get('waku', 0)
@@ -298,8 +288,6 @@ def build_features_v3(boats, features, before_info, df_racer, place_name):
         et = before_info.get(f'et_{waku}', et_mean)
         st = before_info.get(f'st_{waku}', 0.15)
         entry = before_info.get(f'entry_course_{waku}', waku)
-
-        # コース別成績
         racer_row = df_racer[df_racer['toban'] == toban]
         if len(racer_row) > 0:
             r = racer_row.iloc[0]
@@ -310,22 +298,12 @@ def build_features_v3(boats, features, before_info, df_racer, place_name):
             course_entry_rate = 0
             course_win3_rate = 0
             course_avg_st = 0
-
         row = {
-            'waku': waku,
-            'national_win_rate': nwr,
-            'national_2rate': n2r,
-            'local_win_rate': lwr,
-            'local_2rate': l2r,
-            'motor_2rate': m2r,
-            'boat_2rate': b2r,
-            'grade_num': grade,
-            'avg_st': avg_st,
-            'age': age,
-            'weight': weight,
-            'exhibition_time': et,
-            'start_timing': st,
-            'entry_course': entry,
+            'waku': waku, 'national_win_rate': nwr, 'national_2rate': n2r,
+            'local_win_rate': lwr, 'local_2rate': l2r, 'motor_2rate': m2r,
+            'boat_2rate': b2r, 'grade_num': grade, 'avg_st': avg_st,
+            'age': age, 'weight': weight, 'exhibition_time': et,
+            'start_timing': st, 'entry_course': entry,
             'recent_win': nwr / 10.0 if nwr > 0 else 0,
             'place_in_rate': lwr / 10.0 if lwr > 0 else 0,
             'course_entry_rate': course_entry_rate,
@@ -335,26 +313,16 @@ def build_features_v3(boats, features, before_info, df_racer, place_name):
         rows.append(row)
 
     df = pd.DataFrame(rows)
-
-    # --- 基本派生特徴量 ---
     df['is_waku1'] = (df['waku'] == 1).astype(int)
     df['waku_win_hist'] = df['waku'].map(WAKU_WIN_HIST)
     df['waku_penalty'] = df['waku'].apply(lambda x: max(0, x - 3))
     df['win_rate_diff'] = df['national_win_rate'] - df['local_win_rate']
-
-    # vs_avg / rank
     for col in ['national_win_rate', 'national_2rate']:
         df[f'{col}_vs_avg'] = df[col] - df[col].mean()
         df[f'{col}_rank'] = df[col].rank(ascending=False)
-
-    # 1号艇との比較
     w1_row = df[df['waku'] == 1].iloc[0] if len(df[df['waku'] == 1]) > 0 else df.iloc[0]
     df['vs_waku1'] = df['national_win_rate'] - w1_row['national_win_rate']
     df['vs_race_max'] = df['national_win_rate'] - df['national_win_rate'].max()
-
-    # 交互作用
-    df['motor_rank_x_waku'] = df['national_win_rate_rank'] * df['waku']  # motor_2rate_rankの代用
-    # 正確にはmotor_2rate_rank
     df['motor_2rate_rank_temp'] = df['motor_2rate'].rank(ascending=False)
     df['motor_rank_x_waku'] = df['motor_2rate_rank_temp'] * df['waku']
     df['waku_x_winrate'] = df['waku'] * df['national_win_rate']
@@ -362,53 +330,38 @@ def build_features_v3(boats, features, before_info, df_racer, place_name):
     df['grade_vs_race'] = df['grade_num'] - df['grade_num'].mean()
     df['win_rate_product'] = df['national_win_rate'] * df['national_2rate']
     df['machine_score'] = df['motor_2rate'] + df['boat_2rate']
-
-    # --- 展示タイム特徴量 ---
     df['et_rank'] = df['exhibition_time'].rank()
     df['et_diff'] = df['exhibition_time'] - df['exhibition_time'].mean()
     df['et_vs_best'] = df['exhibition_time'] - df['exhibition_time'].min()
     df['et_z'] = (df['exhibition_time'] - df['exhibition_time'].mean()) / (df['exhibition_time'].std() if df['exhibition_time'].std() > 0 else 0.1)
-
-    # --- ST特徴量 ---
     df['st_diff'] = df['start_timing'] - df['start_timing'].mean()
     df['st_vs_best'] = df['start_timing'] - df['start_timing'].min()
     df['st_rank'] = df['start_timing'].rank()
     df['st_z'] = (df['start_timing'] - st_mean) / st_std if st_std > 0 else 0
     df['st_vs_avg_st'] = df['start_timing'] - df['avg_st']
-
-    # --- Zスコア特徴量 ---
     for col, alias in [('national_win_rate', 'nwr'), ('national_2rate', 'n2r'),
                         ('motor_2rate', 'motor'), ('grade_num', 'grade'),
                         ('local_win_rate', 'lwr'), ('boat_2rate', 'boat')]:
         std = df[col].std()
         df[f'{alias}_z'] = (df[col] - df[col].mean()) / std if std > 0 else 0
-
-    # --- 総合スコア ---
     df['total_score'] = df['nwr_z'] + df['n2r_z'] + df['motor_z'] + df['grade_z'] + df['lwr_z']
     df['total_rank'] = df['total_score'].rank(ascending=False)
     df['nwr_rank'] = df['national_win_rate'].rank(ascending=False)
-
-    # --- 1号艇との差分 ---
     w1_nwr = w1_row['national_win_rate']
     w1_n2r = w1_row['national_2rate']
     w1_grade = w1_row['grade_num']
     w1_motor = w1_row['motor_2rate']
     w1_lwr = w1_row['local_win_rate']
     w1_total = df[df['waku'] == 1]['total_score'].values[0] if len(df[df['waku'] == 1]) > 0 else 0
-
     df['nwr_diff_w1'] = df['national_win_rate'] - w1_nwr
     df['n2r_diff_w1'] = df['national_2rate'] - w1_n2r
     df['grade_diff_w1'] = df['grade_num'] - w1_grade
     df['motor_diff_w1'] = df['motor_2rate'] - w1_motor
     df['lwr_diff_w1'] = df['local_win_rate'] - w1_lwr
     df['total_diff_w1'] = df['total_score'] - w1_total
-
-    # 2号艇との差分
     w2_row = df[df['waku'] == 2].iloc[0] if len(df[df['waku'] == 2]) > 0 else df.iloc[1]
     df['nwr_diff_w2'] = df['national_win_rate'] - w2_row['national_win_rate']
     df['total_diff_w2'] = df['total_score'] - (df[df['waku'] == 2]['total_score'].values[0] if len(df[df['waku'] == 2]) > 0 else 0)
-
-    # --- 1号艇情報（全行共通） ---
     w1_st = before_info.get('st_1', 0.15)
     df['w1_nwr'] = w1_nwr
     df['w1_grade'] = w1_grade
@@ -416,14 +369,10 @@ def build_features_v3(boats, features, before_info, df_racer, place_name):
     df['w1_total'] = w1_total
     df['w1_dominance'] = w1_nwr - df[df['waku'] != 1]['national_win_rate'].max() if len(df[df['waku'] != 1]) > 0 else 0
     df['w1_st'] = w1_st
-
-    # --- 他艇情報 ---
     others = df[df['waku'] != 1]['national_win_rate']
     df['others_max'] = others.max() if len(others) > 0 else 0
     df['others_top2_avg'] = others.nlargest(2).mean() if len(others) >= 2 else 0
     df['vs_others_max'] = df['national_win_rate'] - others.max() if len(others) > 0 else 0
-
-    # --- レース全体統計 ---
     df['race_nwr_mean'] = df['national_win_rate'].mean()
     df['race_nwr_std'] = df['national_win_rate'].std()
     df['race_nwr_range'] = df['national_win_rate'].max() - df['national_win_rate'].min()
@@ -433,49 +382,246 @@ def build_features_v3(boats, features, before_info, df_racer, place_name):
     df['race_motor_std'] = df['motor_2rate'].std()
     df['race_nwr_max'] = df['national_win_rate'].max()
     df['race_nwr_min'] = df['national_win_rate'].min()
-
-    # --- 場情報 ---
     df['place_code'] = PLACE_CODE_MAP.get(place_name, 0)
     df['place_w1_winrate'] = PLACE_W1_WINRATE.get(place_name, 0.54)
     df['place_upset_rate'] = PLACE_UPSET_RATE.get(place_name, 0.46)
     df['waku_x_place_w1wr'] = df['waku'] * df['place_w1_winrate']
-
-    # --- コース進入特徴量 ---
     df['course_change'] = df['entry_course'] - df['waku']
     df['course_inward'] = (df['entry_course'] < df['waku']).astype(int)
     df['entry_vs_waku'] = df['entry_course'] - df['waku']
-
-    # --- 交互作用（追加） ---
     df['waku_x_total'] = df['waku'] * df['total_score']
     df['waku_x_nwr_z'] = df['waku'] * df['nwr_z']
     df['waku_x_motor_z'] = df['waku'] * df['motor_z']
-
-    # --- フラグ特徴量 ---
     df['is_strong_inner'] = ((df['waku'] <= 2) & (df['grade_num'] >= 3)).astype(int)
     df['is_weak_w1'] = ((df['waku'] == 1) & (df['national_win_rate'] < df['national_win_rate'].mean())).astype(int)
     df['is_A1_inner'] = ((df['waku'] <= 2) & (df['grade_num'] == 4)).astype(int)
     df['is_A1_w1'] = ((df['waku'] == 1) & (df['grade_num'] == 4)).astype(int)
-
-    # --- パワーインデックス ---
     df['power_index'] = df['nwr_z'] * 0.3 + df['motor_z'] * 0.2 + df['grade_z'] * 0.2 + df['lwr_z'] * 0.15 + df['boat_z'] * 0.15
     df['power_rank'] = df['power_index'].rank(ascending=False)
-
-    # NaN処理
     df = df.fillna(0)
-
-    # 特徴量を揃えて返す
     for f in features:
         if f not in df.columns:
             df[f] = 0
-
     return df[features]
+
+
+# =============================================================================
+# 2連単モデル v2 特徴量構築（69特徴量）
+# =============================================================================
+def build_exacta_features(boats, before_info, df_racer, place_name):
+    """
+    6艇の情報から全30通りの二連単ペア特徴量を構築。
+    各ペア(p1=1着候補, p2=2着候補)に対して69特徴量を生成。
+    """
+    wakus = list(range(1, 7))
+
+    # 各艇の基本情報を辞書に格納
+    boat_info = {}
+    et_list = []
+    for b in boats:
+        w = b['waku']
+        et = before_info.get(f'et_{w}', 6.80)
+        st = before_info.get(f'st_{w}', 0.15)
+        ec = before_info.get(f'entry_course_{w}', w)
+        toban = b.get('toban', 0)
+
+        # コース別データ取得（進入コースベース）
+        racer_row = df_racer[df_racer['toban'] == toban]
+        if len(racer_row) > 0:
+            r = racer_row.iloc[0]
+            ec_int = int(ec)
+            course_w3 = r.get(f'win3_rate_{ec_int}', 0) if f'win3_rate_{ec_int}' in r.index else 0
+            course_er = r.get(f'entry_rate_{ec_int}', 0) if f'entry_rate_{ec_int}' in r.index else 0
+            course_ast = r.get(f'avg_st_{ec_int}', 0.18) if f'avg_st_{ec_int}' in r.index else 0.18
+        else:
+            course_w3 = 0
+            course_er = 0
+            course_ast = 0.18
+
+        boat_info[w] = {
+            'waku': w,
+            'nwr': b.get('national_win_rate', 0),
+            'n2r': b.get('national_2rate', 0),
+            'lwr': b.get('local_win_rate', 0),
+            'l2r': b.get('local_2rate', 0),
+            'mtr': b.get('motor_2rate', 0),
+            'btr': b.get('boat_2rate', 0),
+            'et': et,
+            'st': st,
+            'ec': ec,
+            'grade': GRADE_MAP.get(b.get('grade', 'B1'), 2),
+            'age': b.get('age', 30),
+            'weight': b.get('weight', 52),
+            'course_w3': course_w3 if not pd.isna(course_w3) else 0,
+            'course_er': course_er if not pd.isna(course_er) else 0,
+            'course_ast': course_ast if not pd.isna(course_ast) else 0.18,
+        }
+        et_list.append(et)
+
+    # レース全体の統計
+    all_nwr = [boat_info[w]['nwr'] for w in wakus]
+    all_mtr = [boat_info[w]['mtr'] for w in wakus]
+    all_et = [boat_info[w]['et'] for w in wakus]
+    all_st = [boat_info[w]['st'] for w in wakus]
+    all_grade = [boat_info[w]['grade'] for w in wakus]
+
+    race_nwr_mean = np.mean(all_nwr)
+    race_nwr_std = np.std(all_nwr) if np.std(all_nwr) > 0 else 0.01
+    race_mtr_mean = np.mean(all_mtr)
+    race_et_mean = np.mean(all_et)
+    race_st_mean = np.mean(all_st)
+    race_grade_mean = np.mean(all_grade)
+
+    place_w1wr = PLACE_W1_WINRATE.get(place_name, 0.54)
+
+    # 全30通りのペア特徴量を構築
+    pairs = []
+    for p1_w in wakus:
+        for p2_w in wakus:
+            if p1_w == p2_w:
+                continue
+
+            p1 = boat_info[p1_w]
+            p2 = boat_info[p2_w]
+
+            # パワー指標
+            p1_power = p1['nwr'] * 0.3 + p1['mtr'] * 0.2 + (7.0 - p1['et']) * 20 * 0.2 \
+                       + (0.2 - p1['st']) * 100 * 0.15 + p1['lwr'] * 0.15
+            p2_power = p2['nwr'] * 0.3 + p2['mtr'] * 0.2 + (7.0 - p2['et']) * 20 * 0.2 \
+                       + (0.2 - p2['st']) * 100 * 0.15 + p2['lwr'] * 0.15
+
+            f = {
+                # p1 (1着候補)
+                'p1_waku': p1['waku'],
+                'p1_nwr': p1['nwr'],
+                'p1_n2r': p1['n2r'],
+                'p1_lwr': p1['lwr'],
+                'p1_l2r': p1['l2r'],
+                'p1_mtr': p1['mtr'],
+                'p1_btr': p1['btr'],
+                'p1_et': p1['et'],
+                'p1_st': p1['st'],
+                'p1_ec': p1['ec'],
+                'p1_grade': p1['grade'],
+                'p1_age': p1['age'],
+                'p1_weight': p1['weight'],
+                'p1_course_w3': p1['course_w3'],
+                'p1_course_er': p1['course_er'],
+                'p1_course_ast': p1['course_ast'],
+
+                # p2 (2着候補)
+                'p2_waku': p2['waku'],
+                'p2_nwr': p2['nwr'],
+                'p2_n2r': p2['n2r'],
+                'p2_lwr': p2['lwr'],
+                'p2_l2r': p2['l2r'],
+                'p2_mtr': p2['mtr'],
+                'p2_btr': p2['btr'],
+                'p2_et': p2['et'],
+                'p2_st': p2['st'],
+                'p2_ec': p2['ec'],
+                'p2_grade': p2['grade'],
+                'p2_age': p2['age'],
+                'p2_weight': p2['weight'],
+                'p2_course_w3': p2['course_w3'],
+                'p2_course_er': p2['course_er'],
+                'p2_course_ast': p2['course_ast'],
+
+                # 差分
+                'diff_nwr': p1['nwr'] - p2['nwr'],
+                'diff_n2r': p1['n2r'] - p2['n2r'],
+                'diff_lwr': p1['lwr'] - p2['lwr'],
+                'diff_mtr': p1['mtr'] - p2['mtr'],
+                'diff_btr': p1['btr'] - p2['btr'],
+                'diff_et': p1['et'] - p2['et'],
+                'diff_st': p1['st'] - p2['st'],
+                'diff_grade': p1['grade'] - p2['grade'],
+                'diff_age': p1['age'] - p2['age'],
+
+                # ペア合計
+                'pair_nwr_sum': p1['nwr'] + p2['nwr'],
+                'pair_nwr_product': p1['nwr'] * p2['nwr'],
+                'pair_grade_sum': p1['grade'] + p2['grade'],
+                'pair_mtr_sum': p1['mtr'] + p2['mtr'],
+
+                # vs レース平均
+                'p1_nwr_vs_avg': p1['nwr'] - race_nwr_mean,
+                'p1_mtr_vs_avg': p1['mtr'] - race_mtr_mean,
+                'p1_et_vs_avg': p1['et'] - race_et_mean,
+                'p1_st_vs_avg': p1['st'] - race_st_mean,
+                'p1_nwr_z': (p1['nwr'] - race_nwr_mean) / race_nwr_std,
+                'p2_nwr_vs_avg': p2['nwr'] - race_nwr_mean,
+                'p2_mtr_vs_avg': p2['mtr'] - race_mtr_mean,
+                'p2_et_vs_avg': p2['et'] - race_et_mean,
+                'p2_st_vs_avg': p2['st'] - race_st_mean,
+                'p2_nwr_z': (p2['nwr'] - race_nwr_mean) / race_nwr_std,
+
+                # 枠フラグ
+                'p1_is_waku1': 1 if p1['waku'] == 1 else 0,
+                'p2_is_waku1': 1 if p2['waku'] == 1 else 0,
+                'p1_is_inner': 1 if p1['waku'] <= 3 else 0,
+                'p2_is_inner': 1 if p2['waku'] <= 3 else 0,
+                'both_inner': 1 if p1['waku'] <= 3 and p2['waku'] <= 3 else 0,
+                'waku_gap': abs(p1['waku'] - p2['waku']),
+
+                # 場情報
+                'place_w1wr': place_w1wr,
+                'p1_waku_x_pw1wr': p1['waku'] * place_w1wr,
+
+                # パワー
+                'p1_power': p1_power,
+                'p2_power': p2_power,
+                'diff_power': p1_power - p2_power,
+
+                # レース全体
+                'race_nwr_mean': race_nwr_mean,
+                'race_nwr_std': race_nwr_std,
+                'race_grade_mean': race_grade_mean,
+            }
+
+            f['_p1_waku'] = p1_w
+            f['_p2_waku'] = p2_w
+            pairs.append(f)
+
+    return pd.DataFrame(pairs)
+
+
+def predict_exacta_v2(exacta_model_data, pairs_df):
+    """2連単モデルで全30通りの確率を予測"""
+    features = exacta_model_data['features']
+    model = exacta_model_data['model']
+    iso = exacta_model_data['isotonic']
+
+    X = pairs_df[features].fillna(0)
+    raw_probs = model.predict_proba(X)[:, 1]
+    cal_probs = iso.predict(raw_probs)
+    cal_probs = np.clip(cal_probs, 0.001, 0.999)
+
+    results = []
+    for i, row in pairs_df.iterrows():
+        results.append({
+            'p1': int(row['_p1_waku']),
+            'p2': int(row['_p2_waku']),
+            'combo': f"{int(row['_p1_waku'])}-{int(row['_p2_waku'])}",
+            'prob': cal_probs[i],
+        })
+
+    res_df = pd.DataFrame(results).sort_values('prob', ascending=False).reset_index(drop=True)
+
+    # 確率を正規化（合計100%に）
+    total = res_df['prob'].sum()
+    if total > 0:
+        res_df['prob_norm'] = res_df['prob'] / total
+    else:
+        res_df['prob_norm'] = 1.0 / len(res_df)
+
+    return res_df
 
 
 # =============================================================================
 # v3予測関数
 # =============================================================================
 def predict_win_prob_v3(model_data, X):
-    """v3モデルで1着確率を予測"""
     raw = model_data['model'].predict(X)
     calibrated = model_data['isotonic'].predict(raw)
     calibrated = np.clip(calibrated, 0.001, 0.999)
@@ -486,10 +632,9 @@ def predict_win_prob_v3(model_data, X):
 
 
 # =============================================================================
-# 市場確率の算出
+# 市場確率
 # =============================================================================
 def calc_market_probs(all_odds):
-    """合成単勝オッズから市場の暗黙的1着確率を算出"""
     win_odds = all_odds.get('win', {})
     if not win_odds:
         return {}
@@ -498,18 +643,14 @@ def calc_market_probs(all_odds):
         return {}
     probs = {}
     for w, o in win_odds.items():
-        if o > 0:
-            probs[w] = (1.0 / o) / inv_sum
-        else:
-            probs[w] = 0
+        probs[w] = (1.0 / o) / inv_sum if o > 0 else 0
     return probs
 
 
 # =============================================================================
-# 3連単確率計算（1着モデルベース）
+# 3連単確率計算
 # =============================================================================
 def calc_trifecta_probs_v3(win_probs, wakus):
-    """1着確率から条件付き確率で3連単確率を計算"""
     p1 = dict(zip(wakus, win_probs))
     trifecta = {}
     for perm in permutations(wakus, 3):
@@ -562,15 +703,16 @@ def calc_kelly(prob, odds):
 # メイン
 # =============================================================================
 def main():
-    st.title("🚤 競艇AI予想 v11")
-    st.caption("1着特化モデル v3 | エッジ検出戦略D | 3連単頭固定6点買い | ROI 198%")
+    st.title("🚤 競艇AI予想 v12")
+    st.caption("1着モデル v3 + 2連単モデル v2 (AUC 0.874, ROI 123%) | 二連単TOP1軸4点買い")
 
     try:
-        win_model, df_racer = load_models()
+        win_model, exacta_model, df_racer = load_models()
         features = win_model['features']
+        exacta_feats = exacta_model['features']
     except Exception as e:
         st.error(f"モデルロードエラー: {e}")
-        st.info("必要ファイル: win_model_v3.pkl, racer_course_data_v2.csv")
+        st.info("必要ファイル: win_model_v3.pkl, exacta_model_v2.pkl, racer_course_data_v2.csv")
         return
 
     # --- サイドバー ---
@@ -581,9 +723,19 @@ def main():
     race_date = st.sidebar.date_input("日付", value=date.today())
 
     st.sidebar.header("⚙️ 戦略設定")
-    edge_threshold = st.sidebar.slider("エッジ閾値 (%)", 0, 30, 10, step=1)
-    n_2nd_candidates = st.sidebar.selectbox("2着候補数", [2, 3, 4, 5], index=1)
+    strategy = st.sidebar.radio(
+        "メイン戦略",
+        ["🎯 2連単モデル (推奨)", "📊 1着モデル 戦略D"],
+        index=0
+    )
     bet_amount = st.sidebar.number_input("1点あたり金額 (円)", 100, 10000, 100, step=100)
+
+    if strategy == "🎯 2連単モデル (推奨)":
+        exacta_top_n = st.sidebar.selectbox("2連単 軸数", [1, 2, 3], index=0,
+                                             help="TOP1=4点, TOP2=8点, TOP3=12点")
+    else:
+        edge_threshold = st.sidebar.slider("エッジ閾値 (%)", 0, 30, 10, step=1)
+        n_2nd_candidates = st.sidebar.selectbox("2着候補数", [2, 3, 4, 5], index=1)
 
     st.sidebar.header("📊 表示設定")
     top_n = st.sidebar.slider("各券種 表示数", 5, 30, 15)
@@ -646,7 +798,6 @@ def main():
 
     st.header(f"📋 {place_name} {rnum}R ({rdate})")
 
-    # ステータス表示
     col_s1, col_s2, col_s3 = st.columns(3)
     with col_s1:
         if et_count >= 6:
@@ -683,16 +834,19 @@ def main():
     st.dataframe(pd.DataFrame(entry_data), use_container_width=True, hide_index=True)
 
     # =================================================================
-    # AI予測
+    # AI予測（共通：1着モデル）
     # =================================================================
     with st.spinner("🔧 AI予測計算中..."):
         X = build_features_v3(boats, features, before_info, df_racer, place_name)
         wakus = [b['waku'] for b in boats]
         win_probs = predict_win_prob_v3(win_model, X)
 
-    # --- 1着確率 & エッジ ---
-    st.header("🎯 1着予測 & エッジ分析")
+        # 2連単モデル予測
+        pairs_df = build_exacta_features(boats, before_info, df_racer, place_name)
+        exacta_results = predict_exacta_v2(exacta_model, pairs_df)
 
+    # --- 1着確率 ---
+    st.header("🎯 1着予測")
     pred_df = pd.DataFrame({
         'waku': wakus,
         'name': [b.get('name', '?') for b in boats],
@@ -705,112 +859,187 @@ def main():
         pred_df['market_prob'] = pred_df['waku'].map(market_probs)
         pred_df['edge'] = pred_df['model_prob'] - pred_df['market_prob']
         pred_df['edge_pct'] = pred_df['edge'] * 100
-
-        # 合成単勝オッズ
         pred_df['win_odds'] = pred_df['waku'].map(all_odds.get('win', {}))
 
-        display_data = []
-        for _, row in pred_df.iterrows():
-            w = int(row['waku'])
-            edge_val = row['edge_pct']
-            if edge_val >= 10:
-                edge_icon = '🔥🔥'
-            elif edge_val >= 5:
-                edge_icon = '🔥'
-            elif edge_val >= 0:
-                edge_icon = '✅'
-            else:
-                edge_icon = '⬇️'
-
-            display_data.append({
-                '枠': f"{WAKU_COLORS.get(w, '')} {w}",
-                '名前': row['name'],
-                '級別': f"{GRADE_COLORS.get(row['grade'], '')} {row['grade']}",
-                'AI予測': f"{row['model_prob']:.1%}",
-                '市場評価': f"{row['market_prob']:.1%}",
-                'エッジ': f"{edge_val:+.1f}%",
-                '単勝ｵｯｽﾞ': f"{row['win_odds']:.1f}" if pd.notna(row.get('win_odds')) else '-',
-                '判定': edge_icon,
-            })
-        st.dataframe(pd.DataFrame(display_data), use_container_width=True, hide_index=True)
-    else:
-        display_data = []
-        for _, row in pred_df.iterrows():
-            w = int(row['waku'])
-            display_data.append({
-                '枠': f"{WAKU_COLORS.get(w, '')} {w}",
-                '名前': row['name'],
-                '級別': f"{GRADE_COLORS.get(row['grade'], '')} {row['grade']}",
-                'AI予測': f"{row['model_prob']:.1%}",
-            })
-        st.dataframe(pd.DataFrame(display_data), use_container_width=True, hide_index=True)
-
-    # =================================================================
-    # 戦略D: 頭固定6点買い推奨
-    # =================================================================
-    st.header("💰 戦略D: 3連単 頭固定買い目")
-
-    top1_waku = pred_df.iloc[0]['waku']
-    top1_name = pred_df.iloc[0]['name']
-    top1_prob = pred_df.iloc[0]['model_prob']
-
-    if has_odds and market_probs:
-        top1_market = market_probs.get(top1_waku, 0)
-        top1_edge = (top1_prob - top1_market) * 100
-    else:
-        top1_edge = None
-
-    # 2-3着候補（モデル順位2位以降）
-    candidates = pred_df.iloc[1:1+n_2nd_candidates]['waku'].tolist()
-
-    # 買い目生成
-    bets = []
-    for perm in permutations(candidates, 2):
-        combo = f"{int(top1_waku)}-{int(perm[0])}-{int(perm[1])}"
-        prob = 0
-        odds = trifecta_odds_raw.get(combo, 0)
-        bets.append({'combo': combo, 'odds': odds})
-
-    # エッジ判定
-    if top1_edge is not None:
-        if top1_edge >= edge_threshold:
-            st.success(f"🔥 購入推奨！ {int(top1_waku)}号艇 {top1_name} "
-                      f"(AI: {top1_prob:.1%} vs 市場: {top1_market:.1%}, エッジ: {top1_edge:+.1f}%)")
-        elif top1_edge >= 5:
-            st.info(f"✅ やや有望 {int(top1_waku)}号艇 {top1_name} "
-                   f"(AI: {top1_prob:.1%} vs 市場: {top1_market:.1%}, エッジ: {top1_edge:+.1f}%)")
-        elif top1_edge >= 0:
-            st.warning(f"⚠️ エッジ小 {int(top1_waku)}号艇 {top1_name} "
-                      f"(AI: {top1_prob:.1%} vs 市場: {top1_market:.1%}, エッジ: {top1_edge:+.1f}%)")
-        else:
-            st.error(f"❌ 見送り推奨 {int(top1_waku)}号艇 {top1_name} "
-                    f"(AI: {top1_prob:.1%} vs 市場: {top1_market:.1%}, エッジ: {top1_edge:+.1f}%)")
-    else:
-        st.info(f"📊 {int(top1_waku)}号艇 {top1_name} (AI: {top1_prob:.1%}) ※オッズ未取得のためエッジ計算不可")
-
-    # 買い目テーブル
-    bet_data = []
-    total_invest = 0
-    for b in bets:
+    display_1st = []
+    for _, row in pred_df.iterrows():
+        w = int(row['waku'])
         d = {
-            '買い目': b['combo'],
-            'ｵｯｽﾞ': f"{b['odds']:.1f}" if b['odds'] > 0 else '-',
-            '金額': f"¥{bet_amount:,}",
+            '枠': f"{WAKU_COLORS.get(w, '')} {w}",
+            '名前': row['name'],
+            '級別': f"{GRADE_COLORS.get(row['grade'], '')} {row['grade']}",
+            'AI予測': f"{row['model_prob']:.1%}",
         }
-        if b['odds'] > 0:
-            d['払戻'] = f"¥{int(b['odds'] * bet_amount):,}"
+        if has_odds and market_probs:
+            d['市場評価'] = f"{row['market_prob']:.1%}"
+            d['エッジ'] = f"{row['edge_pct']:+.1f}%"
+            d['単勝ｵｯｽﾞ'] = f"{row['win_odds']:.1f}" if pd.notna(row.get('win_odds')) else '-'
+        display_1st.append(d)
+    st.dataframe(pd.DataFrame(display_1st), use_container_width=True, hide_index=True)
+
+    # =================================================================
+    # 2連単モデル予測結果
+    # =================================================================
+    st.header("🏆 2連単AI予測 (モデル v2)")
+
+    # 2連単TOP表示
+    exacta_display = []
+    for i, row in exacta_results.head(top_n).iterrows():
+        d = {
+            '順位': i + 1,
+            '組み合わせ': row['combo'],
+            'AI確率': f"{row['prob_norm']:.2%}",
+        }
+        if has_odds:
+            o = all_odds['exacta'].get(row['combo'], 0)
+            if o > 0:
+                ev = row['prob_norm'] * o
+                kelly = calc_kelly(row['prob_norm'], o)
+                d['ｵｯｽﾞ'] = f"{o:.1f}"
+                d['期待値'] = f"{ev:.2f}"
+                d['Kelly'] = f"{kelly:.1%}" if kelly > 0 else '-'
+                d['判定'] = '🔥' if ev >= 1.3 else ('✅' if ev >= 1.0 else '⬇️')
+            else:
+                d['ｵｯｽﾞ'] = '-'
+                d['期待値'] = '-'
+                d['Kelly'] = '-'
+                d['判定'] = ''
+        exacta_display.append(d)
+    st.dataframe(pd.DataFrame(exacta_display), use_container_width=True, hide_index=True)
+
+    # =================================================================
+    # メイン戦略: 2連単モデル推奨買い目
+    # =================================================================
+    if strategy == "🎯 2連単モデル (推奨)":
+        st.header("💰 推奨買い目: 2連単TOP軸 → 三連単展開")
+        st.caption("バックテスト ROI: TOP1軸4点=123.2% / TOP2軸8点=122.8% / TOP3軸12点=120.6%")
+
+        # TOP N 二連単を軸に、残り4艇を3着候補として三連単展開
+        top_exactas = exacta_results.head(exacta_top_n)
+
+        all_bets = []
+        for _, ex_row in top_exactas.iterrows():
+            p1 = ex_row['p1']
+            p2 = ex_row['p2']
+            ex_prob = ex_row['prob_norm']
+
+            # 3着候補 = p1, p2 以外の4艇
+            thirds = [w for w in range(1, 7) if w != p1 and w != p2]
+
+            for p3 in thirds:
+                combo = f"{p1}-{p2}-{p3}"
+                tri_odds = trifecta_odds_raw.get(combo, 0)
+                all_bets.append({
+                    '軸': f"{p1}-{p2}",
+                    '買い目': combo,
+                    '2連単確率': ex_prob,
+                    'ｵｯｽﾞ': tri_odds,
+                })
+
+        n_bets = len(all_bets)
+        total_invest = n_bets * bet_amount
+
+        # 表示
+        top1_ex = top_exactas.iloc[0]
+        p1_name = next((b.get('name', '?') for b in boats if b['waku'] == top1_ex['p1']), '?')
+        p2_name = next((b.get('name', '?') for b in boats if b['waku'] == top1_ex['p2']), '?')
+
+        st.success(
+            f"🎯 TOP1軸: **{int(top1_ex['p1'])}号艇 {p1_name}** → **{int(top1_ex['p2'])}号艇 {p2_name}** "
+            f"(確率: {top1_ex['prob_norm']:.1%})"
+        )
+
+        if exacta_top_n >= 2:
+            for idx in range(1, min(exacta_top_n, len(top_exactas))):
+                ex = top_exactas.iloc[idx]
+                n1 = next((b.get('name', '?') for b in boats if b['waku'] == ex['p1']), '?')
+                n2 = next((b.get('name', '?') for b in boats if b['waku'] == ex['p2']), '?')
+                st.info(
+                    f"📌 TOP{idx+1}軸: **{int(ex['p1'])}号艇 {n1}** → **{int(ex['p2'])}号艇 {n2}** "
+                    f"(確率: {ex['prob_norm']:.1%})"
+                )
+
+        # 買い目テーブル
+        bet_data = []
+        for b in all_bets:
+            d = {
+                '軸': b['軸'],
+                '買い目': b['買い目'],
+                'ｵｯｽﾞ': f"{b['ｵｯｽﾞ']:.1f}" if b['ｵｯｽﾞ'] > 0 else '-',
+                '金額': f"¥{bet_amount:,}",
+            }
+            if b['ｵｯｽﾞ'] > 0:
+                d['払戻'] = f"¥{int(b['ｵｯｽﾞ'] * bet_amount):,}"
+            else:
+                d['払戻'] = '-'
+            bet_data.append(d)
+
+        st.dataframe(pd.DataFrame(bet_data), use_container_width=True, hide_index=True)
+
+        valid_odds = [b['ｵｯｽﾞ'] for b in all_bets if b['ｵｯｽﾞ'] > 0]
+        summary = f"**合計: {n_bets}点 × ¥{bet_amount:,} = ¥{total_invest:,}**"
+        if valid_odds:
+            summary += f" | 最低配当: ¥{int(min(valid_odds) * bet_amount):,} | 最高配当: ¥{int(max(valid_odds) * bet_amount):,}"
+        st.markdown(summary)
+
+    # =================================================================
+    # 戦略D: 頭固定6点買い（従来）
+    # =================================================================
+    else:
+        st.header("💰 戦略D: 3連単 頭固定買い目")
+
+        top1_waku = pred_df.iloc[0]['waku']
+        top1_name = pred_df.iloc[0]['name']
+        top1_prob = pred_df.iloc[0]['model_prob']
+
+        if has_odds and market_probs:
+            top1_market = market_probs.get(top1_waku, 0)
+            top1_edge = (top1_prob - top1_market) * 100
         else:
-            d['払戻'] = '-'
-        bet_data.append(d)
-        total_invest += bet_amount
+            top1_edge = None
 
-    st.dataframe(pd.DataFrame(bet_data), use_container_width=True, hide_index=True)
+        candidates = pred_df.iloc[1:1+n_2nd_candidates]['waku'].tolist()
 
-    n_bets = len(bets)
-    valid_odds = [b['odds'] for b in bets if b['odds'] > 0]
-    st.markdown(f"**合計: {n_bets}点 × ¥{bet_amount:,} = ¥{total_invest:,}** | "
-               f"最低配当: ¥{int(min(valid_odds) * bet_amount):,}" if valid_odds else
-               f"**合計: {n_bets}点 × ¥{bet_amount:,} = ¥{total_invest:,}**")
+        bets = []
+        for perm in permutations(candidates, 2):
+            combo = f"{int(top1_waku)}-{int(perm[0])}-{int(perm[1])}"
+            odds = trifecta_odds_raw.get(combo, 0)
+            bets.append({'combo': combo, 'odds': odds})
+
+        if top1_edge is not None:
+            if top1_edge >= edge_threshold:
+                st.success(f"🔥 購入推奨！ {int(top1_waku)}号艇 {top1_name} "
+                          f"(AI: {top1_prob:.1%} vs 市場: {top1_market:.1%}, エッジ: {top1_edge:+.1f}%)")
+            elif top1_edge >= 5:
+                st.info(f"✅ やや有望 {int(top1_waku)}号艇 {top1_name} "
+                       f"(AI: {top1_prob:.1%} vs 市場: {top1_market:.1%}, エッジ: {top1_edge:+.1f}%)")
+            elif top1_edge >= 0:
+                st.warning(f"⚠️ エッジ小 {int(top1_waku)}号艇 {top1_name} "
+                          f"(AI: {top1_prob:.1%} vs 市場: {top1_market:.1%}, エッジ: {top1_edge:+.1f}%)")
+            else:
+                st.error(f"❌ 見送り推奨 {int(top1_waku)}号艇 {top1_name} "
+                        f"(AI: {top1_prob:.1%} vs 市場: {top1_market:.1%}, エッジ: {top1_edge:+.1f}%)")
+
+        bet_data = []
+        total_invest = 0
+        for b in bets:
+            d = {
+                '買い目': b['combo'],
+                'ｵｯｽﾞ': f"{b['odds']:.1f}" if b['odds'] > 0 else '-',
+                '金額': f"¥{bet_amount:,}",
+                '払戻': f"¥{int(b['odds'] * bet_amount):,}" if b['odds'] > 0 else '-',
+            }
+            bet_data.append(d)
+            total_invest += bet_amount
+
+        st.dataframe(pd.DataFrame(bet_data), use_container_width=True, hide_index=True)
+
+        n_bets = len(bets)
+        valid_odds = [b['odds'] for b in bets if b['odds'] > 0]
+        summary = f"**合計: {n_bets}点 × ¥{bet_amount:,} = ¥{total_invest:,}**"
+        if valid_odds:
+            summary += f" | 最低配当: ¥{int(min(valid_odds) * bet_amount):,}"
+        st.markdown(summary)
 
     # =================================================================
     # 全券種確率（展開表示）
@@ -819,7 +1048,6 @@ def main():
         trifecta_probs = calc_trifecta_probs_v3(win_probs, wakus)
         all_probs = derive_all_probs(trifecta_probs)
 
-        # 3連単
         st.subheader("3連単 TOP")
         sorted_3t = sorted(trifecta_probs.items(), key=lambda x: -x[1])
         data_3t = []
@@ -836,21 +1064,21 @@ def main():
             data_3t.append(d)
         st.dataframe(pd.DataFrame(data_3t), use_container_width=True, hide_index=True)
 
-        # 2連単
         col_e, col_q = st.columns(2)
         with col_e:
-            st.subheader("2連単")
-            sorted_ex = sorted(all_probs['exacta'].items(), key=lambda x: -x[1])
+            st.subheader("2連単 (モデルv2)")
             ex_data = []
-            for i, (combo, prob) in enumerate(sorted_ex[:top_n], 1):
-                d = {'順位': i, '組み合わせ': combo, '確率': f"{prob:.2%}"}
+            for i, row in exacta_results.head(top_n).iterrows():
+                d = {'順位': i + 1, '組み合わせ': row['combo'], '確率': f"{row['prob_norm']:.2%}"}
                 if has_odds:
-                    o = all_odds['exacta'].get(combo, 0)
-                    ev = prob * o if o > 0 else 0
-                    kelly = calc_kelly(prob, o) if o > 0 else 0
-                    d['ｵｯｽﾞ'] = f"{o:.1f}" if o > 0 else '-'
-                    d['期待値'] = f"{ev:.2f}"
-                    d['Kelly'] = f"{kelly:.1%}" if kelly > 0 else '-'
+                    o = all_odds['exacta'].get(row['combo'], 0)
+                    if o > 0:
+                        ev = row['prob_norm'] * o
+                        d['ｵｯｽﾞ'] = f"{o:.1f}"
+                        d['期待値'] = f"{ev:.2f}"
+                    else:
+                        d['ｵｯｽﾞ'] = '-'
+                        d['期待値'] = '-'
                 ex_data.append(d)
             st.dataframe(pd.DataFrame(ex_data), use_container_width=True, hide_index=True)
 
@@ -863,10 +1091,8 @@ def main():
                 if has_odds:
                     o = all_odds['quinella'].get(combo, 0)
                     ev = prob * o if o > 0 else 0
-                    kelly = calc_kelly(prob, o) if o > 0 else 0
                     d['ｵｯｽﾞ'] = f"{o:.1f}" if o > 0 else '-'
                     d['期待値'] = f"{ev:.2f}"
-                    d['Kelly'] = f"{kelly:.1%}" if kelly > 0 else '-'
                 q_data.append(d)
             st.dataframe(pd.DataFrame(q_data), use_container_width=True, hide_index=True)
 
@@ -876,8 +1102,9 @@ def main():
     st.divider()
     col_f1, col_f2 = st.columns(2)
     with col_f1:
-        st.caption(f"📊 モデル: win_model_v3 (AUC {win_model.get('test_auc', 0):.4f}) | "
-                  f"特徴量: {len(features)}個 | 戦略D: ROI 198.4%")
+        st.caption(f"📊 1着モデル: v3 (AUC {win_model.get('test_auc', 0):.4f}) | "
+                  f"2連単モデル: v2 (AUC {exacta_model.get('test_auc', 0):.4f}) | "
+                  f"ROI 123.2%")
     with col_f2:
         st.caption(f"⚠️ 投資は自己責任です。バックテスト結果は将来の利益を保証しません。")
 
