@@ -1,6 +1,7 @@
 # ============================================================
-# 🚤 ボートレース AI シミュレーター v3.0
+# 🚤 ボートレース AI シミュレーター v3.1
 # 場別プロファイル + オッズ自動取得 + 期待値計算 統合版
+# オッズパーサー修正版
 # ============================================================
 import streamlit as st
 import numpy as np
@@ -72,23 +73,19 @@ DEFAULT_VENUE_PROFILE = {
     "course_top2":     [72.0, 44.0, 34.0, 30.0, 20.0, 9.0],
     "course_top3":     [82.0, 60.0, 54.0, 50.0, 38.0, 22.0],
     "kimarite": {
-        1: [94.0, 0, 0, 0, 6.0, 0],
-        2: [0, 28, 56, 0, 13, 3],
-        3: [0, 42, 16, 28, 11, 3],
-        4: [0, 44, 20, 26, 7, 3],
-        5: [0, 20, 8, 56, 13, 3],
-        6: [0, 40, 15, 35, 5, 5],
+        1: [94.0, 0, 0, 0, 6.0, 0], 2: [0, 28, 56, 0, 13, 3],
+        3: [0, 42, 16, 28, 11, 3], 4: [0, 44, 20, 26, 7, 3],
+        5: [0, 20, 8, 56, 13, 3], 6: [0, 40, 15, 35, 5, 5],
     },
-    "wind_effect": 1.0,
-    "memo": "全国平均プロファイル"
+    "wind_effect": 1.0, "memo": "全国平均プロファイル"
 }
 
 VENUE_PROFILES = {
     "桐生": {
         "code": "01", "water": "淡水", "tide": False,
         "course_win_rate": [49.4, 11.7, 12.8, 11.5, 8.5, 6.1],
-        "course_top2":     [68.5, 48.6, 32.8, 29.0, 21.6, 11.8],
-        "course_top3":     [77.7, 62.7, 52.1, 50.8, 42.6, 26.1],
+        "course_top2": [68.5, 48.6, 32.8, 29.0, 21.6, 11.8],
+        "course_top3": [77.7, 62.7, 52.1, 50.8, 42.6, 26.1],
         "kimarite": {
             1: [92.0, 0, 0, 0, 8.0, 0], 2: [0, 27, 55, 0, 15, 3],
             3: [0, 40, 18, 30, 10, 2], 4: [0, 42, 20, 28, 8, 2],
@@ -99,8 +96,8 @@ VENUE_PROFILES = {
     "戸田": {
         "code": "02", "water": "淡水", "tide": False,
         "course_win_rate": [44.0, 13.0, 13.5, 14.0, 9.0, 6.5],
-        "course_top2":     [60.4, 48.0, 36.0, 32.0, 24.0, 13.0],
-        "course_top3":     [71.9, 62.0, 55.0, 52.0, 44.0, 28.0],
+        "course_top2": [60.4, 48.0, 36.0, 32.0, 24.0, 13.0],
+        "course_top3": [71.9, 62.0, 55.0, 52.0, 44.0, 28.0],
         "kimarite": {
             1: [94.5, 0, 0, 0, 5.5, 0], 2: [0, 25, 60, 0, 12, 3],
             3: [0, 45, 15, 25, 12, 3], 4: [0, 50, 18, 22, 8, 2],
@@ -111,8 +108,8 @@ VENUE_PROFILES = {
     "江戸川": {
         "code": "03", "water": "汽水", "tide": True,
         "course_win_rate": [47.6, 13.0, 12.0, 12.0, 9.0, 5.5],
-        "course_top2":     [67.4, 46.0, 34.0, 30.0, 22.0, 12.0],
-        "course_top3":     [78.4, 62.0, 54.0, 50.0, 40.0, 26.0],
+        "course_top2": [67.4, 46.0, 34.0, 30.0, 22.0, 12.0],
+        "course_top3": [78.4, 62.0, 54.0, 50.0, 40.0, 26.0],
         "kimarite": {
             1: [93.0, 0, 0, 0, 7.0, 0], 2: [0, 30, 52, 0, 14, 4],
             3: [0, 42, 16, 28, 11, 3], 4: [0, 44, 20, 26, 7, 3],
@@ -123,8 +120,8 @@ VENUE_PROFILES = {
     "平和島": {
         "code": "04", "water": "海水", "tide": True,
         "course_win_rate": [46.2, 14.5, 12.0, 12.0, 9.0, 5.5],
-        "course_top2":     [65.0, 48.0, 34.0, 30.0, 22.0, 12.0],
-        "course_top3":     [76.6, 62.0, 54.0, 50.0, 40.0, 26.0],
+        "course_top2": [65.0, 48.0, 34.0, 30.0, 22.0, 12.0],
+        "course_top3": [76.6, 62.0, 54.0, 50.0, 40.0, 26.0],
         "kimarite": {
             1: [93.0, 0, 0, 0, 7.0, 0], 2: [0, 25, 60, 0, 12, 3],
             3: [0, 40, 18, 28, 11, 3], 4: [0, 44, 20, 26, 7, 3],
@@ -135,8 +132,8 @@ VENUE_PROFILES = {
     "多摩川": {
         "code": "05", "water": "淡水", "tide": False,
         "course_win_rate": [52.3, 14.0, 12.0, 10.5, 7.0, 3.5],
-        "course_top2":     [70.3, 46.0, 34.0, 30.0, 20.0, 10.0],
-        "course_top3":     [79.4, 62.0, 54.0, 50.0, 38.0, 24.0],
+        "course_top2": [70.3, 46.0, 34.0, 30.0, 20.0, 10.0],
+        "course_top3": [79.4, 62.0, 54.0, 50.0, 38.0, 24.0],
         "kimarite": {
             1: [94.0, 0, 0, 0, 6.0, 0], 2: [0, 28, 56, 0, 13, 3],
             3: [0, 42, 16, 28, 11, 3], 4: [0, 44, 20, 26, 7, 3],
@@ -147,8 +144,8 @@ VENUE_PROFILES = {
     "浜名湖": {
         "code": "06", "water": "汽水", "tide": True,
         "course_win_rate": [51.8, 13.5, 12.5, 10.5, 7.0, 3.5],
-        "course_top2":     [69.6, 45.0, 34.0, 30.0, 20.0, 10.0],
-        "course_top3":     [78.9, 61.0, 54.0, 50.0, 38.0, 24.0],
+        "course_top2": [69.6, 45.0, 34.0, 30.0, 20.0, 10.0],
+        "course_top3": [78.9, 61.0, 54.0, 50.0, 38.0, 24.0],
         "kimarite": {
             1: [94.0, 0, 0, 0, 6.0, 0], 2: [0, 28, 56, 0, 13, 3],
             3: [0, 42, 16, 28, 11, 3], 4: [0, 44, 20, 26, 7, 3],
@@ -159,8 +156,8 @@ VENUE_PROFILES = {
     "蒲郡": {
         "code": "07", "water": "汽水", "tide": True,
         "course_win_rate": [57.6, 11.8, 10.5, 10.0, 6.5, 3.0],
-        "course_top2":     [74.2, 42.0, 32.0, 28.0, 18.0, 8.0],
-        "course_top3":     [83.2, 58.0, 52.0, 48.0, 34.0, 22.0],
+        "course_top2": [74.2, 42.0, 32.0, 28.0, 18.0, 8.0],
+        "course_top3": [83.2, 58.0, 52.0, 48.0, 34.0, 22.0],
         "kimarite": {
             1: [95.0, 0, 0, 0, 5.0, 0], 2: [0, 28, 58, 0, 12, 2],
             3: [0, 42, 16, 28, 12, 2], 4: [0, 44, 22, 26, 6, 2],
@@ -171,8 +168,8 @@ VENUE_PROFILES = {
     "常滑": {
         "code": "08", "water": "海水", "tide": True,
         "course_win_rate": [58.0, 12.8, 10.0, 10.0, 6.0, 3.0],
-        "course_top2":     [73.9, 44.0, 32.0, 28.0, 18.0, 8.0],
-        "course_top3":     [82.1, 58.0, 52.0, 48.0, 34.0, 22.0],
+        "course_top2": [73.9, 44.0, 32.0, 28.0, 18.0, 8.0],
+        "course_top3": [82.1, 58.0, 52.0, 48.0, 34.0, 22.0],
         "kimarite": {
             1: [95.0, 0, 0, 0, 5.0, 0], 2: [0, 28, 58, 0, 12, 2],
             3: [0, 42, 16, 28, 12, 2], 4: [0, 44, 22, 26, 6, 2],
@@ -183,8 +180,8 @@ VENUE_PROFILES = {
     "津": {
         "code": "09", "water": "海水", "tide": True,
         "course_win_rate": [56.9, 12.5, 11.5, 10.5, 6.0, 2.5],
-        "course_top2":     [73.1, 44.0, 34.0, 28.0, 18.0, 8.0],
-        "course_top3":     [81.6, 58.0, 52.0, 48.0, 34.0, 22.0],
+        "course_top2": [73.1, 44.0, 34.0, 28.0, 18.0, 8.0],
+        "course_top3": [81.6, 58.0, 52.0, 48.0, 34.0, 22.0],
         "kimarite": {
             1: [94.0, 0, 0, 0, 6.0, 0], 2: [0, 28, 56, 0, 13, 3],
             3: [0, 42, 16, 28, 11, 3], 4: [0, 44, 20, 26, 7, 3],
@@ -195,8 +192,8 @@ VENUE_PROFILES = {
     "三国": {
         "code": "10", "water": "淡水", "tide": False,
         "course_win_rate": [53.2, 13.0, 12.0, 10.5, 7.0, 3.5],
-        "course_top2":     [72.1, 44.0, 34.0, 30.0, 20.0, 9.0],
-        "course_top3":     [80.9, 60.0, 54.0, 50.0, 38.0, 22.0],
+        "course_top2": [72.1, 44.0, 34.0, 30.0, 20.0, 9.0],
+        "course_top3": [80.9, 60.0, 54.0, 50.0, 38.0, 22.0],
         "kimarite": {
             1: [94.0, 0, 0, 0, 6.0, 0], 2: [0, 28, 56, 0, 13, 3],
             3: [0, 42, 16, 28, 11, 3], 4: [0, 44, 20, 26, 7, 3],
@@ -207,8 +204,8 @@ VENUE_PROFILES = {
     "びわこ": {
         "code": "11", "water": "淡水", "tide": False,
         "course_win_rate": [52.0, 13.5, 12.0, 10.5, 7.0, 3.5],
-        "course_top2":     [71.1, 45.0, 34.0, 30.0, 20.0, 9.0],
-        "course_top3":     [80.9, 61.0, 54.0, 50.0, 38.0, 22.0],
+        "course_top2": [71.1, 45.0, 34.0, 30.0, 20.0, 9.0],
+        "course_top3": [80.9, 61.0, 54.0, 50.0, 38.0, 22.0],
         "kimarite": {
             1: [94.0, 0, 0, 0, 6.0, 0], 2: [0, 28, 56, 0, 13, 3],
             3: [0, 42, 16, 28, 11, 3], 4: [0, 44, 20, 26, 7, 3],
@@ -219,8 +216,8 @@ VENUE_PROFILES = {
     "住之江": {
         "code": "12", "water": "淡水", "tide": False,
         "course_win_rate": [58.0, 13.0, 10.5, 10.0, 5.5, 2.5],
-        "course_top2":     [73.7, 44.0, 32.0, 28.0, 18.0, 8.0],
-        "course_top3":     [82.3, 58.0, 52.0, 48.0, 34.0, 22.0],
+        "course_top2": [73.7, 44.0, 32.0, 28.0, 18.0, 8.0],
+        "course_top3": [82.3, 58.0, 52.0, 48.0, 34.0, 22.0],
         "kimarite": {
             1: [95.0, 0, 0, 0, 5.0, 0], 2: [0, 28, 58, 0, 12, 2],
             3: [0, 42, 16, 28, 12, 2], 4: [0, 44, 22, 26, 6, 2],
@@ -231,8 +228,8 @@ VENUE_PROFILES = {
     "尼崎": {
         "code": "13", "water": "淡水", "tide": False,
         "course_win_rate": [57.6, 13.0, 11.0, 10.5, 5.5, 2.5],
-        "course_top2":     [74.5, 44.0, 32.0, 28.0, 18.0, 8.0],
-        "course_top3":     [83.3, 58.0, 52.0, 48.0, 34.0, 22.0],
+        "course_top2": [74.5, 44.0, 32.0, 28.0, 18.0, 8.0],
+        "course_top3": [83.3, 58.0, 52.0, 48.0, 34.0, 22.0],
         "kimarite": {
             1: [95.0, 0, 0, 0, 5.0, 0], 2: [0, 28, 58, 0, 12, 2],
             3: [0, 42, 16, 28, 12, 2], 4: [0, 44, 22, 26, 6, 2],
@@ -243,8 +240,8 @@ VENUE_PROFILES = {
     "鳴門": {
         "code": "14", "water": "海水", "tide": True,
         "course_win_rate": [46.5, 14.5, 12.5, 12.0, 8.5, 5.5],
-        "course_top2":     [64.5, 48.0, 35.0, 30.0, 22.0, 12.0],
-        "course_top3":     [75.8, 62.0, 55.0, 52.0, 42.0, 28.0],
+        "course_top2": [64.5, 48.0, 35.0, 30.0, 22.0, 12.0],
+        "course_top3": [75.8, 62.0, 55.0, 52.0, 42.0, 28.0],
         "kimarite": {
             1: [93.0, 0, 0, 0, 7.0, 0], 2: [0, 26, 58, 0, 13, 3],
             3: [0, 40, 18, 28, 11, 3], 4: [0, 44, 20, 26, 7, 3],
@@ -255,8 +252,8 @@ VENUE_PROFILES = {
     "丸亀": {
         "code": "15", "water": "海水", "tide": True,
         "course_win_rate": [56.8, 13.0, 11.0, 10.5, 6.0, 2.5],
-        "course_top2":     [73.8, 44.0, 34.0, 28.0, 18.0, 8.0],
-        "course_top3":     [82.3, 58.0, 52.0, 48.0, 34.0, 22.0],
+        "course_top2": [73.8, 44.0, 34.0, 28.0, 18.0, 8.0],
+        "course_top3": [82.3, 58.0, 52.0, 48.0, 34.0, 22.0],
         "kimarite": {
             1: [94.0, 0, 0, 0, 6.0, 0], 2: [0, 28, 56, 0, 13, 3],
             3: [0, 42, 16, 28, 11, 3], 4: [0, 44, 20, 26, 7, 3],
@@ -267,8 +264,8 @@ VENUE_PROFILES = {
     "児島": {
         "code": "16", "water": "海水", "tide": True,
         "course_win_rate": [57.4, 12.0, 11.0, 10.5, 6.0, 2.5],
-        "course_top2":     [75.0, 44.0, 34.0, 28.0, 18.0, 8.0],
-        "course_top3":     [83.6, 58.0, 52.0, 48.0, 34.0, 22.0],
+        "course_top2": [75.0, 44.0, 34.0, 28.0, 18.0, 8.0],
+        "course_top3": [83.6, 58.0, 52.0, 48.0, 34.0, 22.0],
         "kimarite": {
             1: [95.0, 0, 0, 0, 5.0, 0], 2: [0, 28, 58, 0, 12, 2],
             3: [0, 42, 16, 28, 12, 2], 4: [0, 44, 22, 26, 6, 2],
@@ -279,8 +276,8 @@ VENUE_PROFILES = {
     "宮島": {
         "code": "17", "water": "海水", "tide": True,
         "course_win_rate": [56.2, 13.0, 11.0, 10.5, 6.5, 3.0],
-        "course_top2":     [73.1, 44.0, 34.0, 28.0, 18.0, 8.0],
-        "course_top3":     [80.9, 58.0, 52.0, 48.0, 34.0, 22.0],
+        "course_top2": [73.1, 44.0, 34.0, 28.0, 18.0, 8.0],
+        "course_top3": [80.9, 58.0, 52.0, 48.0, 34.0, 22.0],
         "kimarite": {
             1: [94.0, 0, 0, 0, 6.0, 0], 2: [0, 28, 56, 0, 13, 3],
             3: [0, 42, 16, 28, 11, 3], 4: [0, 44, 20, 26, 7, 3],
@@ -291,8 +288,8 @@ VENUE_PROFILES = {
     "徳山": {
         "code": "18", "water": "海水", "tide": True,
         "course_win_rate": [63.4, 11.7, 12.8, 9.7, 3.5, 1.1],
-        "course_top2":     [80.4, 42.2, 32.8, 27.2, 15.7, 6.3],
-        "course_top3":     [87.5, 59.4, 53.0, 48.8, 32.7, 23.1],
+        "course_top2": [80.4, 42.2, 32.8, 27.2, 15.7, 6.3],
+        "course_top3": [87.5, 59.4, 53.0, 48.8, 32.7, 23.1],
         "kimarite": {
             1: [95.7, 0, 0, 0, 4.2, 0],
             2: [0, 30.0, 58.7, 0, 11.2, 0],
@@ -303,25 +300,25 @@ VENUE_PROFILES = {
         },
         "seasonal": {"春": 64.6, "夏": 66.1, "秋": 61.1, "冬": 62.9},
         "wind_effect": 0.6,
-        "memo": "全国1位のイン天国。追い風安定、海水で干満差あり。上げ潮時は差し増加"
+        "memo": "全国1位のイン天国。追い風安定、海水で干満差あり"
     },
     "下関": {
         "code": "19", "water": "海水", "tide": True,
         "course_win_rate": [62.0, 12.0, 10.0, 9.0, 4.5, 2.0],
-        "course_top2":     [77.4, 44.0, 32.0, 28.0, 16.0, 7.0],
-        "course_top3":     [85.4, 58.0, 50.0, 46.0, 32.0, 20.0],
+        "course_top2": [77.4, 44.0, 32.0, 28.0, 16.0, 7.0],
+        "course_top3": [85.4, 58.0, 50.0, 46.0, 32.0, 20.0],
         "kimarite": {
             1: [95.5, 0, 0, 0, 4.5, 0], 2: [0, 28, 58, 0, 12, 2],
             3: [0, 44, 16, 28, 10, 2], 4: [0, 46, 20, 26, 6, 2],
             5: [0, 22, 8, 56, 12, 2], 6: [0, 45, 15, 30, 5, 5],
         },
-        "wind_effect": 0.7, "memo": "ナイター。イン天国。徳山に次ぐ1コース1着率"
+        "wind_effect": 0.7, "memo": "ナイター。徳山に次ぐ1コース1着率"
     },
     "若松": {
         "code": "20", "water": "海水", "tide": True,
         "course_win_rate": [57.0, 13.0, 11.0, 10.0, 6.0, 3.0],
-        "course_top2":     [74.1, 44.0, 34.0, 28.0, 18.0, 8.0],
-        "course_top3":     [83.4, 58.0, 52.0, 48.0, 34.0, 22.0],
+        "course_top2": [74.1, 44.0, 34.0, 28.0, 18.0, 8.0],
+        "course_top3": [83.4, 58.0, 52.0, 48.0, 34.0, 22.0],
         "kimarite": {
             1: [94.0, 0, 0, 0, 6.0, 0], 2: [0, 28, 56, 0, 13, 3],
             3: [0, 42, 16, 28, 11, 3], 4: [0, 44, 20, 26, 7, 3],
@@ -332,8 +329,8 @@ VENUE_PROFILES = {
     "芦屋": {
         "code": "21", "water": "淡水", "tide": False,
         "course_win_rate": [57.8, 12.5, 11.0, 10.0, 5.5, 2.5],
-        "course_top2":     [74.1, 44.0, 32.0, 28.0, 18.0, 8.0],
-        "course_top3":     [83.5, 58.0, 52.0, 48.0, 34.0, 22.0],
+        "course_top2": [74.1, 44.0, 32.0, 28.0, 18.0, 8.0],
+        "course_top3": [83.5, 58.0, 52.0, 48.0, 34.0, 22.0],
         "kimarite": {
             1: [95.0, 0, 0, 0, 5.0, 0], 2: [0, 28, 58, 0, 12, 2],
             3: [0, 42, 16, 28, 12, 2], 4: [0, 44, 22, 26, 6, 2],
@@ -344,20 +341,20 @@ VENUE_PROFILES = {
     "福岡": {
         "code": "22", "water": "海水", "tide": True,
         "course_win_rate": [57.3, 13.0, 11.0, 10.5, 5.5, 2.5],
-        "course_top2":     [74.5, 44.0, 34.0, 28.0, 18.0, 8.0],
-        "course_top3":     [82.4, 58.0, 52.0, 48.0, 34.0, 22.0],
+        "course_top2": [74.5, 44.0, 34.0, 28.0, 18.0, 8.0],
+        "course_top3": [82.4, 58.0, 52.0, 48.0, 34.0, 22.0],
         "kimarite": {
             1: [94.0, 0, 0, 0, 6.0, 0], 2: [0, 28, 56, 0, 13, 3],
             3: [0, 42, 16, 28, 11, 3], 4: [0, 44, 20, 26, 7, 3],
             5: [0, 20, 8, 56, 13, 3], 6: [0, 40, 15, 35, 5, 5],
         },
-        "wind_effect": 1.2, "memo": "博多湾沿い。うねり注意。追い風でイン有利"
+        "wind_effect": 1.2, "memo": "博多湾沿い。うねり注意"
     },
     "唐津": {
         "code": "23", "water": "海水", "tide": True,
         "course_win_rate": [55.2, 13.0, 12.0, 10.5, 6.0, 3.0],
-        "course_top2":     [73.3, 44.0, 34.0, 30.0, 20.0, 9.0],
-        "course_top3":     [82.3, 60.0, 54.0, 50.0, 38.0, 22.0],
+        "course_top2": [73.3, 44.0, 34.0, 30.0, 20.0, 9.0],
+        "course_top3": [82.3, 60.0, 54.0, 50.0, 38.0, 22.0],
         "kimarite": {
             1: [94.0, 0, 0, 0, 6.0, 0], 2: [0, 28, 56, 0, 13, 3],
             3: [0, 42, 16, 28, 11, 3], 4: [0, 44, 20, 26, 7, 3],
@@ -368,8 +365,8 @@ VENUE_PROFILES = {
     "大村": {
         "code": "24", "water": "海水", "tide": True,
         "course_win_rate": [62.6, 11.5, 11.0, 9.5, 4.0, 1.8],
-        "course_top2":     [79.3, 43.0, 33.0, 28.0, 17.0, 7.0],
-        "course_top3":     [87.3, 60.0, 54.0, 49.0, 34.0, 24.0],
+        "course_top2": [79.3, 43.0, 33.0, 28.0, 17.0, 7.0],
+        "course_top3": [87.3, 60.0, 54.0, 49.0, 34.0, 24.0],
         "kimarite": {
             1: [95.0, 0, 0, 0, 5.0, 0], 2: [0, 28, 58, 0, 12, 2],
             3: [0, 42, 16, 28, 12, 2], 4: [0, 44, 22, 26, 6, 2],
@@ -403,7 +400,7 @@ class BoatAgent:
     avg_st: float = 0.18
     st_stability: float = 50.0
     win_rate: float = 4.0
-    lane_win_rate: float = 0.0  # 枠別1着率
+    lane_win_rate: float = 0.0
     top2_rate: float = 30.0
     top3_rate: float = 45.0
     ability: int = 45
@@ -442,7 +439,7 @@ class RaceCondition:
     wave_height: float = 3.0
     weather: str = "曇り"
     wind_direction: str = "追い風"
-    tide: str = ""  # "満潮", "干潮", "上げ潮", "下げ潮", ""
+    tide: str = ""
 
 # ============================================================
 # 3. レースシミュレーター (場別プロファイル対応版)
@@ -459,8 +456,6 @@ class RaceSimulator:
     def _compute_race_weights(self) -> Dict[int, float]:
         profile = self.profile
         season = get_season(self.month)
-
-        # 場のコース別1着率を取得 (季節補正あり)
         venue_cwr = list(profile['course_win_rate'])
         if 'seasonal' in profile:
             s1c = profile['seasonal'].get(season, venue_cwr[0])
@@ -470,46 +465,29 @@ class RaceSimulator:
             if orig_remaining > 0:
                 for i in range(1, 6):
                     venue_cwr[i] = profile['course_win_rate'][i] * (remaining / orig_remaining)
-
         weights = {}
         for agent in self.agents:
             idx = agent.lane - 1
             venue_base = venue_cwr[idx]
-
-            # 選手枠別実績とのブレンド
             player_lw = agent.lane_win_rate if agent.lane_win_rate > 0 else venue_base
             base_prob = venue_base * 0.55 + player_lw * 0.45
-
-            # 能力調整
             power = agent.get_power_score()
             power_adj = 0.85 + power * 0.30
-
-            # ST 調整
             st_q = max(0, (0.22 - agent.avg_st) / 0.10)
             st_adj = 0.92 + st_q * 0.08
-
-            # モーター調整
             motor_adj = 1.0 + agent.motor_contribution * 0.05
-
-            # 風の影響 (場の感度)
             ws = self.conditions.wind_speed
             w_eff = profile.get('wind_effect', 1.0)
             if agent.lane <= 2:
                 wind_adj = 1.0 + (ws - 3) * 0.008 * w_eff
             else:
                 wind_adj = 1.0 + (ws - 3) * 0.004 * w_eff
-
-            # 潮汐
             tide_adj = 1.0
             if profile.get('tide') and self.conditions.wave_height >= 5:
-                if agent.lane == 1:
-                    tide_adj = 0.95
-                elif agent.lane == 2:
-                    tide_adj = 1.06
-
+                if agent.lane == 1: tide_adj = 0.95
+                elif agent.lane == 2: tide_adj = 1.06
             w = max(0.3, base_prob * power_adj * st_adj * motor_adj * wind_adj * tide_adj)
             weights[agent.lane] = w
-
         total = sum(weights.values())
         if total > 0:
             for k in weights:
@@ -519,18 +497,13 @@ class RaceSimulator:
     def simulate_race(self) -> dict:
         for a in self.agents:
             a.calculate_start_timing()
-
         base_w = self._compute_race_weights()
-
-        # ST ボーナス
         sts = {a.lane: a.actual_st for a in self.agents}
         best_st = min(sts.values())
         adjusted = dict(base_w)
-        for lane, st in sts.items():
-            diff = st - best_st
+        for lane, st_val in sts.items():
+            diff = st_val - best_st
             adjusted[lane] *= max(0.7, 1.0 - diff * 2.5)
-
-        # ターン技能ボーナス
         profile = self.profile
         for a in self.agents:
             kim = profile.get('kimarite', {}).get(a.lane, [0]*6)
@@ -540,47 +513,32 @@ class RaceSimulator:
             else:
                 attack = (kim[1] + kim[3]) / 100.0 if len(kim) > 3 else 0.3
                 adjusted[a.lane] *= (0.95 + attack * 0.15)
-
-        # ランダムノイズ
         for lane in adjusted:
             adjusted[lane] *= np.random.uniform(0.85, 1.15)
             adjusted[lane] = max(0.1, adjusted[lane])
-
-        # 正規化して順位決定
         lanes = list(adjusted.keys())
-        ws = np.array([adjusted[l] for l in lanes])
-        ws = ws / ws.sum()
-
+        ws_arr = np.array([adjusted[l] for l in lanes])
+        ws_arr = ws_arr / ws_arr.sum()
         order = []
         remaining = list(range(len(lanes)))
-        rem_w = ws.copy()
+        rem_w = ws_arr.copy()
         for _ in range(len(lanes)):
             rem_w_norm = rem_w[remaining] / rem_w[remaining].sum()
             chosen_idx = np.random.choice(remaining, p=rem_w_norm)
             order.append(lanes[chosen_idx])
             remaining.remove(chosen_idx)
-
-        # 軌跡生成
         n_steps = 300
         history = {a.lane: [] for a in self.agents}
         positions = {a.lane: 0.0 for a in self.agents}
         final_rank = {lane: rank for rank, lane in enumerate(order)}
-
         for step in range(n_steps):
-            t = step / n_steps
             for a in self.agents:
                 target = 1800 * (1 - final_rank[a.lane] / 6.0)
                 current = positions[a.lane]
                 speed = (target - current) * 0.03 + np.random.normal(0, 2)
                 positions[a.lane] = current + speed
                 history[a.lane].append(positions[a.lane])
-
-        return {
-            'finish_order': order,
-            'history': history,
-            'start_timings': sts,
-            'weights': adjusted
-        }
+        return {'finish_order': order, 'history': history, 'start_timings': sts, 'weights': adjusted}
 
     def determine_kimarite(self, order, sts) -> str:
         winner = order[0]
@@ -610,8 +568,6 @@ def parse_race_data(text: str) -> Tuple[List[BoatAgent], Optional[RaceCondition]
     agents = []
     lines = text.strip().split('\n')
     full = text
-
-    # 選手名・番号パターン
     name_patterns = [
         re.compile(r'(\d)号艇\s*(\d{3,5})\s+(.+?)\s+(A1|A2|B1|B2)'),
         re.compile(r'(\d)\s+(\d{3,5})\s+(\S+)\s+(A1|A2|B1|B2)'),
@@ -623,8 +579,6 @@ def parse_race_data(text: str) -> Tuple[List[BoatAgent], Optional[RaceCondition]
             if m:
                 found.append((int(m.group(1)), int(m.group(2)), m.group(3), m.group(4)))
                 break
-
-    # 数値列の抽出ヘルパー
     def find_numbers_after(keyword, count=6):
         for i, line in enumerate(lines):
             if keyword in line:
@@ -632,15 +586,12 @@ def parse_race_data(text: str) -> Tuple[List[BoatAgent], Optional[RaceCondition]
                 nums = [float(n) for n in nums if '.' in n or (n.isdigit() and float(n) < 1000)]
                 if len(nums) >= count:
                     return nums[:count]
-                # 次の行も探す
                 for j in range(i+1, min(i+5, len(lines))):
                     nums += re.findall(r'[\d]+\.[\d]+', lines[j])
                     nums = [float(n) for n in nums]
                     if len(nums) >= count:
                         return nums[:count]
         return None
-
-    # パーセント値の抽出
     def find_pcts_after(keyword, count=6):
         for i, line in enumerate(lines):
             if keyword in line:
@@ -651,14 +602,11 @@ def parse_race_data(text: str) -> Tuple[List[BoatAgent], Optional[RaceCondition]
                 if len(pcts) >= count:
                     return [float(p) for p in pcts[:count]]
         return None
-
     avg_sts = find_numbers_after('平均ST', 6) or find_numbers_after('ST', 6)
     win_rates = find_pcts_after('勝率', 6) or find_numbers_after('勝率', 6)
     top2 = find_pcts_after('2連対', 6)
     top3 = find_pcts_after('3連対', 6)
     lane_win = find_pcts_after('枠別1着', 6) or find_pcts_after('枠別', 6)
-
-    # 天候
     cond = RaceCondition()
     temp_m = re.search(r'(\d+)\s*[°℃]', full)
     if temp_m: cond.temperature = float(temp_m.group(1))
@@ -669,18 +617,13 @@ def parse_race_data(text: str) -> Tuple[List[BoatAgent], Optional[RaceCondition]
     if '雨' in full: cond.weather = "雨"
     elif '晴' in full: cond.weather = "晴れ"
     elif '曇' in full: cond.weather = "曇り"
-
-    # 6艇分のエージェント生成
     for i in range(6):
         lane = i + 1
         if i < len(found):
             _, num, name, rank = found[i]
         else:
             num, name, rank = 0, f"選手{lane}", "B1"
-
-        # 枠別1着率のデフォルト推定
         default_lw = {1: 55.0, 2: 12.0, 3: 12.0, 4: 10.0, 5: 6.0, 6: 2.5}
-
         agent = BoatAgent(
             lane=lane, number=num, name=name, rank=rank,
             avg_st=avg_sts[i] if avg_sts and i < len(avg_sts) else 0.18,
@@ -690,13 +633,19 @@ def parse_race_data(text: str) -> Tuple[List[BoatAgent], Optional[RaceCondition]
             top3_rate=top3[i] if top3 and i < len(top3) else 45.0,
         )
         agents.append(agent)
-
     return agents, cond
-
 # ============================================================
-# 5. オッズ取得 & 合成オッズ & 期待値
+# 5. オッズ取得 & 合成オッズ & 期待値 (修正版)
 # ============================================================
 def fetch_trifecta_odds(venue_code: str, date_str: str, race_no: int) -> dict:
+    """
+    boatrace.jp の3連単オッズを取得し、正確な買い目に対応付ける。
+
+    公式テーブルの構造:
+      - 20行 × 6列 = 120セル (行優先で格納)
+      - 各列が「1着=X号艇」(X=1..6)
+      - 各列内の20セルは 2着(小→大) × 3着(小→大) の順
+    """
     url = f"https://www.boatrace.jp/owpc/pc/race/odds3t?rno={race_no}&jcd={venue_code}&hd={date_str}"
     try:
         req = Request(url, headers={'User-Agent': 'Mozilla/5.0'})
@@ -714,91 +663,130 @@ def fetch_trifecta_odds(venue_code: str, date_str: str, race_no: int) -> dict:
     odds_vals = []
     for table in soup.find_all('table'):
         cells = table.find_all('td', class_='oddsPoint')
-        if cells:
+        if len(cells) >= 120:
             for c in cells:
-                try: odds_vals.append(float(c.get_text(strip=True)))
-                except: odds_vals.append(0.0)
+                txt = c.get_text(strip=True)
+                try:
+                    odds_vals.append(float(txt.replace(',', '')))
+                except ValueError:
+                    odds_vals.append(0.0)
             break
 
     if len(odds_vals) < 120:
-        # テキストフォールバック
-        text = soup.get_text()
-        nums = re.findall(r'(?<!\d)([\d]{1,5}(?:\.[\d]+))(?!\d)', text)
-        candidates = [float(n) for n in nums if 1.0 <= float(n) <= 99999]
-        if len(candidates) >= 120:
-            odds_vals = candidates[:120]
+        st.warning(f"⚠️ oddsPointセルが{len(odds_vals)}個しか見つかりません")
+        return {}
+
+    boats = [1, 2, 3, 4, 5, 6]
+
+    def get_column_order(first):
+        others = sorted([b for b in boats if b != first])
+        order = []
+        for second in others:
+            thirds = sorted([b for b in others if b != second])
+            for third in thirds:
+                order.append((first, second, third))
+        return order
+
+    column_orders = []
+    for first in boats:
+        column_orders.append(get_column_order(first))
 
     odds_dict = {}
-    if len(odds_vals) >= 120:
-        idx = 0
-        for f in range(1, 7):
-            for s in range(1, 7):
-                if s == f: continue
-                for t in range(1, 7):
-                    if t == f or t == s: continue
-                    odds_dict[f"{f}-{s}-{t}"] = odds_vals[idx]
-                    idx += 1
+    for row_idx in range(20):
+        for col_idx in range(6):
+            cell_idx = row_idx * 6 + col_idx
+            if cell_idx < len(odds_vals):
+                f, s, t = column_orders[col_idx][row_idx]
+                key = f"{f}-{s}-{t}"
+                odds_dict[key] = odds_vals[cell_idx]
+
     return odds_dict
 
 
 def parse_pasted_odds(text: str) -> dict:
     odds_dict = {}
-    # "1-2-3 5.0" 形式
     for m in re.finditer(r'(\d)\s*-\s*(\d)\s*-\s*(\d)\s+([\d,.]+)', text):
         key = f"{m.group(1)}-{m.group(2)}-{m.group(3)}"
-        try: odds_dict[key] = float(m.group(4).replace(',', ''))
-        except: pass
+        try:
+            odds_dict[key] = float(m.group(4).replace(',', ''))
+        except ValueError:
+            pass
     if len(odds_dict) >= 60:
         return odds_dict
-    # 数値のみ120個
     nums = re.findall(r'(?<!\d)([\d]{1,5}(?:\.[\d]+))(?!\d)', text)
     candidates = [float(n) for n in nums if 1.0 <= float(n) <= 99999]
     if len(candidates) >= 120:
-        idx = 0
-        for f in range(1, 7):
-            for s in range(1, 7):
-                if s == f: continue
-                for t in range(1, 7):
-                    if t == f or t == s: continue
-                    odds_dict[f"{f}-{s}-{t}"] = candidates[idx]
-                    idx += 1
+        boats = [1, 2, 3, 4, 5, 6]
+        def get_column_order(first):
+            others = sorted([b for b in boats if b != first])
+            order = []
+            for second in others:
+                thirds = sorted([b for b in others if b != second])
+                for third in thirds:
+                    order.append((first, second, third))
+            return order
+        column_orders = [get_column_order(f) for f in boats]
+        for row_idx in range(20):
+            for col_idx in range(6):
+                cell_idx = row_idx * 6 + col_idx
+                if cell_idx < len(candidates):
+                    f, s, t = column_orders[col_idx][row_idx]
+                    odds_dict[f"{f}-{s}-{t}"] = candidates[cell_idx]
     return odds_dict
 
 
 def compute_synthetic_odds(tri_odds: dict) -> dict:
-    boats = [1,2,3,4,5,6]
+    boats = [1, 2, 3, 4, 5, 6]
     result = {'trifecta': dict(tri_odds), 'trio': {}, 'exacta': {}, 'quinella': {}, 'wide': {}}
 
     for combo in itertools.combinations(boats, 3):
-        inv = sum(1/tri_odds[f"{p[0]}-{p[1]}-{p[2]}"] for p in itertools.permutations(combo)
-                  if f"{p[0]}-{p[1]}-{p[2]}" in tri_odds and tri_odds[f"{p[0]}-{p[1]}-{p[2]}"] > 0)
-        result['trio'][f"{combo[0]}={combo[1]}={combo[2]}"] = round(1/inv, 1) if inv > 0 else 0
+        inv = 0.0
+        for p in itertools.permutations(combo):
+            k = f"{p[0]}-{p[1]}-{p[2]}"
+            if k in tri_odds and tri_odds[k] > 0:
+                inv += 1.0 / tri_odds[k]
+        result['trio'][f"{combo[0]}={combo[1]}={combo[2]}"] = round(1.0 / inv, 1) if inv > 0 else 0
 
     for f in boats:
         for s in boats:
-            if f == s: continue
-            inv = sum(1/tri_odds[f"{f}-{s}-{t}"] for t in boats if t != f and t != s
-                      and f"{f}-{s}-{t}" in tri_odds and tri_odds[f"{f}-{s}-{t}"] > 0)
-            result['exacta'][f"{f}-{s}"] = round(1/inv, 1) if inv > 0 else 0
+            if f == s:
+                continue
+            inv = 0.0
+            for t in boats:
+                if t == f or t == s:
+                    continue
+                k = f"{f}-{s}-{t}"
+                if k in tri_odds and tri_odds[k] > 0:
+                    inv += 1.0 / tri_odds[k]
+            result['exacta'][f"{f}-{s}"] = round(1.0 / inv, 1) if inv > 0 else 0
 
     for combo in itertools.combinations(boats, 2):
         a, b = combo
-        inv = sum(1/tri_odds[f"{p[0]}-{p[1]}-{t}"]
-                  for p in itertools.permutations(combo) for t in boats if t not in combo
-                  and f"{p[0]}-{p[1]}-{t}" in tri_odds and tri_odds[f"{p[0]}-{p[1]}-{t}"] > 0)
-        result['quinella'][f"{a}={b}"] = round(1/inv, 1) if inv > 0 else 0
+        inv_q = 0.0
+        for p in itertools.permutations(combo):
+            for t in boats:
+                if t in combo:
+                    continue
+                k = f"{p[0]}-{p[1]}-{t}"
+                if k in tri_odds and tri_odds[k] > 0:
+                    inv_q += 1.0 / tri_odds[k]
+        result['quinella'][f"{a}={b}"] = round(1.0 / inv_q, 1) if inv_q > 0 else 0
 
-        inv_w = sum(1/tri_odds[f"{p[0]}-{p[1]}-{p[2]}"]
-                    for third in boats if third not in combo
-                    for p in itertools.permutations([a, b, third])
-                    if f"{p[0]}-{p[1]}-{p[2]}" in tri_odds and tri_odds[f"{p[0]}-{p[1]}-{p[2]}"] > 0)
-        result['wide'][f"{a}={b}"] = round(1/inv_w, 1) if inv_w > 0 else 0
+        inv_w = 0.0
+        for third in boats:
+            if third in combo:
+                continue
+            for p in itertools.permutations([a, b, third]):
+                k = f"{p[0]}-{p[1]}-{p[2]}"
+                if k in tri_odds and tri_odds[k] > 0:
+                    inv_w += 1.0 / tri_odds[k]
+        result['wide'][f"{a}={b}"] = round(1.0 / inv_w, 1) if inv_w > 0 else 0
 
     return result
 
 
 def run_ev_simulation(agents, conditions, venue_name, month, n_sims=10000):
-    boats = [1,2,3,4,5,6]
+    boats = [1, 2, 3, 4, 5, 6]
     counts = {
         'trifecta': {}, 'trio': {}, 'exacta': {}, 'quinella': {}, 'wide': {}
     }
@@ -821,32 +809,27 @@ def run_ev_simulation(agents, conditions, venue_name, month, n_sims=10000):
         order = result['finish_order']
         top3 = order[:3]
 
-        # 3連単
         tkey = f"{top3[0]}-{top3[1]}-{top3[2]}"
         if tkey in counts['trifecta']:
             counts['trifecta'][tkey] += 1
 
-        # 3連複
         ts = sorted(top3)
         trio_key = f"{ts[0]}={ts[1]}={ts[2]}"
         if trio_key in counts['trio']:
             counts['trio'][trio_key] += 1
 
-        # 2連単
         ekey = f"{top3[0]}-{top3[1]}"
         if ekey in counts['exacta']:
             counts['exacta'][ekey] += 1
 
-        # 2連複
         qs = sorted(top3[:2])
         qkey = f"{qs[0]}={qs[1]}"
         if qkey in counts['quinella']:
             counts['quinella'][qkey] += 1
 
-        # 拡連複
         for combo in itertools.combinations(top3, 2):
-            ws = sorted(combo)
-            wkey = f"{ws[0]}={ws[1]}"
+            wsorted = sorted(combo)
+            wkey = f"{wsorted[0]}={wsorted[1]}"
             if wkey in counts['wide']:
                 counts['wide'][wkey] += 1
 
@@ -887,21 +870,23 @@ st.set_page_config(page_title="🚤 ボートレース AI シミュレーター"
 st.markdown("""
 <div style='background: linear-gradient(135deg, #0f0c29, #302b63, #24243e);
             padding: 25px; border-radius: 15px; margin-bottom: 20px;'>
-    <h1 style='color: #00d2ff; text-align: center;'>🚤 ボートレース AI シミュレーター v3.0</h1>
+    <h1 style='color: #00d2ff; text-align: center;'>🚤 ボートレース AI シミュレーター v3.1</h1>
     <p style='color: #ccc; text-align: center;'>
-        場別プロファイル対応 ｜ オッズ自動取得 ｜ 全券種期待値計算
+        場別プロファイル対応 ｜ オッズ自動取得(修正版) ｜ 全券種期待値計算
     </p>
 </div>
 """, unsafe_allow_html=True)
 
 # ----------------------------------------------------------
-# 6-A. レース場 & 日付設定
+# 6-A. サイドバー: レース場 & 日付設定
 # ----------------------------------------------------------
 st.sidebar.markdown("## ⚙️ レース設定")
 
 venue_list = list(VENUE_PROFILES.keys())
-selected_venue = st.sidebar.selectbox("🏟️ レース場", venue_list,
-                                       index=venue_list.index("徳山"), key="sel_venue")
+selected_venue = st.sidebar.selectbox(
+    "🏟️ レース場", venue_list,
+    index=venue_list.index("徳山"), key="sel_venue")
+
 from datetime import date, datetime
 race_date = st.sidebar.date_input("📅 日付", value=date(2026, 2, 27), key="sel_date")
 race_no = st.sidebar.number_input("🏁 レース番号", 1, 12, 1, key="sel_race_no")
@@ -915,11 +900,10 @@ st.sidebar.write(f"**水質:** {profile['water']}　**干満差:** {'あり' if 
 st.sidebar.write(f"**風の影響度:** {profile.get('wind_effect', 1.0)}　**季節:** {season}")
 st.sidebar.write(f"💡 {profile.get('memo', '')}")
 
-# コース別1着率をサイドバーに表示
 fig_sb, ax_sb = plt.subplots(figsize=(5, 2.5))
 cwr = profile['course_win_rate']
 colors_sb = ['#e74c3c', '#000000', '#2ecc71', '#3498db', '#f1c40f', '#9b59b6']
-bars_sb = ax_sb.bar([f'{i+1}コース' for i in range(6)], cwr, color=colors_sb)
+ax_sb.bar([f'{i+1}コース' for i in range(6)], cwr, color=colors_sb)
 for i, v in enumerate(cwr):
     ax_sb.text(i, v + 0.5, f'{v}%', ha='center', fontsize=8)
 ax_sb.set_ylabel('1着率(%)', fontsize=8)
@@ -934,7 +918,9 @@ plt.close()
 # ----------------------------------------------------------
 st.markdown("## 📝 レースデータ入力")
 
-input_mode = st.radio("入力方式", ["📋 テキスト貼り付け", "✏️ フォーム入力"], horizontal=True, key="input_mode")
+input_mode = st.radio(
+    "入力方式", ["📋 テキスト貼り付け", "✏️ フォーム入力"],
+    horizontal=True, key="input_mode")
 
 agents = []
 conditions = RaceCondition()
@@ -952,8 +938,9 @@ if input_mode == "📋 テキスト貼り付け":
 3連対率: 88.0% 47.1% 26.7% 38.9% 37.5% 0.0%
 気温12℃ 風速3m 波高3cm 曇り"""
 
-    race_text = st.text_area("レースデータを貼り付け", value="", height=300,
-                              placeholder="出走表のデータをここに貼り付けてください...", key="race_text")
+    race_text = st.text_area(
+        "レースデータを貼り付け", value="", height=300,
+        placeholder="出走表のデータをここに貼り付けてください...", key="race_text")
 
     col_s1, col_s2 = st.columns(2)
     with col_s1:
@@ -977,18 +964,17 @@ elif input_mode == "✏️ フォーム入力":
         with st.expander(f"🚤 {lane}号艇", expanded=(i == 0)):
             cols = st.columns(4)
             with cols[0]:
-                name = st.text_input(f"選手名", key=f"name_{lane}")
-                rank = st.selectbox(f"級別", ["A1","A2","B1","B2"], index=2, key=f"rank_{lane}")
+                name = st.text_input("選手名", key=f"name_{lane}")
+                rank = st.selectbox("級別", ["A1", "A2", "B1", "B2"], index=2, key=f"rank_{lane}")
             with cols[1]:
-                avg_st = st.number_input(f"平均ST", 0.05, 0.30, 0.18, 0.01, key=f"st_{lane}")
-                win_rate = st.number_input(f"勝率", 1.0, 10.0, 4.0, 0.1, key=f"wr_{lane}")
+                avg_st = st.number_input("平均ST", 0.05, 0.30, 0.18, 0.01, key=f"st_{lane}")
+                win_rate = st.number_input("勝率", 1.0, 10.0, 4.0, 0.1, key=f"wr_{lane}")
             with cols[2]:
-                lane_wr = st.number_input(f"枠別1着率(%)", 0.0, 100.0, 0.0, 1.0, key=f"lwr_{lane}")
-                motor = st.number_input(f"モータ貢献", -2.0, 2.0, 0.0, 0.1, key=f"motor_{lane}")
+                lane_wr = st.number_input("枠別1着率(%)", 0.0, 100.0, 0.0, 1.0, key=f"lwr_{lane}")
+                motor = st.number_input("モータ貢献", -2.0, 2.0, 0.0, 0.1, key=f"motor_{lane}")
             with cols[3]:
-                top2 = st.number_input(f"2連対率(%)", 0.0, 100.0, 30.0, 1.0, key=f"t2_{lane}")
-                top3 = st.number_input(f"3連対率(%)", 0.0, 100.0, 45.0, 1.0, key=f"t3_{lane}")
-
+                top2 = st.number_input("2連対率(%)", 0.0, 100.0, 30.0, 1.0, key=f"t2_{lane}")
+                top3 = st.number_input("3連対率(%)", 0.0, 100.0, 45.0, 1.0, key=f"t3_{lane}")
             default_lw = {1: 55.0, 2: 12.0, 3: 12.0, 4: 10.0, 5: 6.0, 6: 2.5}
             form_agents.append(BoatAgent(
                 lane=lane, name=name or f"選手{lane}", rank=rank,
@@ -999,14 +985,20 @@ elif input_mode == "✏️ フォーム入力":
 
     st.markdown("#### 🌤️ 気象条件")
     wc1, wc2, wc3, wc4 = st.columns(4)
-    with wc1: temp = st.number_input("気温(℃)", -5.0, 40.0, 15.0, key="f_temp")
-    with wc2: wind = st.number_input("風速(m)", 0.0, 15.0, 3.0, key="f_wind")
-    with wc3: wave = st.number_input("波高(cm)", 0.0, 30.0, 3.0, key="f_wave")
-    with wc4: weather = st.selectbox("天候", ["晴れ","曇り","雨","雪"], index=1, key="f_weather")
+    with wc1:
+        temp = st.number_input("気温(℃)", -5.0, 40.0, 15.0, key="f_temp")
+    with wc2:
+        wind = st.number_input("風速(m)", 0.0, 15.0, 3.0, key="f_wind")
+    with wc3:
+        wave = st.number_input("波高(cm)", 0.0, 30.0, 3.0, key="f_wave")
+    with wc4:
+        weather = st.selectbox("天候", ["晴れ", "曇り", "雨", "雪"], index=1, key="f_weather")
 
     if st.button("✅ エージェント作成", key="btn_form", type="primary"):
         agents = form_agents
-        conditions = RaceCondition(temperature=temp, wind_speed=wind, wave_height=wave, weather=weather)
+        conditions = RaceCondition(
+            temperature=temp, wind_speed=wind,
+            wave_height=wave, weather=weather)
         st.session_state['agents'] = agents
         st.session_state['conditions'] = conditions
         st.success(f"✅ {len(agents)}艇のエージェントを作成しました！")
@@ -1041,7 +1033,6 @@ if 'agents' in st.session_state and st.session_state['agents']:
 
     if st.button("🚀 シミュレーション実行", key="btn_sim", type="primary"):
 
-        # --- 単発シミュ 3回 ---
         st.markdown("### 🏁 単発シミュレーション (3回)")
         sim = RaceSimulator(agents, conditions, selected_venue, race_month)
         for trial in range(3):
@@ -1049,13 +1040,12 @@ if 'agents' in st.session_state and st.session_state['agents']:
             order = result['finish_order']
             sts = result['start_timings']
             kim = sim.determine_kimarite(order, sts)
-
             col_r, col_g = st.columns([1, 2])
             with col_r:
                 st.write(f"**第{trial+1}回** — 決まり手: **{kim}**")
-                for rank, lane in enumerate(order):
+                for rank_i, lane in enumerate(order):
                     a = next(ag for ag in agents if ag.lane == lane)
-                    st.write(f"{rank+1}着: {lane}号艇 {a.name} (ST {sts[lane]:.3f})")
+                    st.write(f"{rank_i+1}着: {lane}号艇 {a.name} (ST {sts[lane]:.3f})")
             with col_g:
                 fig_t, ax_t = plt.subplots(figsize=(8, 3))
                 for lane_h, hist in result['history'].items():
@@ -1069,9 +1059,9 @@ if 'agents' in st.session_state and st.session_state['agents']:
                 st.pyplot(fig_t)
                 plt.close()
 
-        # --- モンテカルロ ---
         st.markdown(f"### 📊 モンテカルロシミュレーション ({n_sims}回)")
-        st.write(f"**レース場:** {selected_venue}　**季節:** {season}　**1コース場別1着率:** {profile['course_win_rate'][0]}%")
+        st.write(f"**レース場:** {selected_venue}　**季節:** {season}　"
+                 f"**1コース場別1着率:** {profile['course_win_rate'][0]}%")
 
         mc_sim = RaceSimulator(agents, conditions, selected_venue, race_month)
         win_counts = {a.lane: 0 for a in agents}
@@ -1087,15 +1077,14 @@ if 'agents' in st.session_state and st.session_state['agents']:
             win_counts[o[0]] += 1
             top2_counts[o[0]] += 1
             top2_counts[o[1]] += 1
-            for l in o[:3]:
-                top3_counts[l] += 1
+            for l_idx in o[:3]:
+                top3_counts[l_idx] += 1
             k = mc_sim.determine_kimarite(o, res['start_timings'])
             kim_counts[k] = kim_counts.get(k, 0) + 1
-            if (i+1) % mc_step == 0:
-                mc_bar.progress((i+1)/n_sims)
+            if (i + 1) % mc_step == 0:
+                mc_bar.progress((i + 1) / n_sims)
         mc_bar.progress(1.0)
 
-        # 結果表
         mc_rows = []
         for a in agents:
             mc_rows.append({
@@ -1106,16 +1095,14 @@ if 'agents' in st.session_state and st.session_state['agents']:
             })
         st.dataframe(pd.DataFrame(mc_rows), use_container_width=True)
 
-        # 棒グラフ
         fig_mc, axes_mc = plt.subplots(1, 3, figsize=(14, 4))
         labels = [f"{a.lane}号艇\n{a.name}" for a in agents]
         colors_mc = ['#e74c3c', '#000000', '#2ecc71', '#3498db', '#f1c40f', '#9b59b6']
-
         for ax, data, title in zip(axes_mc,
-            [[win_counts[a.lane]/n_sims*100 for a in agents],
-             [top2_counts[a.lane]/n_sims*100 for a in agents],
-             [top3_counts[a.lane]/n_sims*100 for a in agents]],
-            ['1着率 (%)', '2連対率 (%)', '3連対率 (%)']):
+                [[win_counts[a.lane]/n_sims*100 for a in agents],
+                 [top2_counts[a.lane]/n_sims*100 for a in agents],
+                 [top3_counts[a.lane]/n_sims*100 for a in agents]],
+                ['1着率 (%)', '2連対率 (%)', '3連対率 (%)']):
             ax.bar(labels, data, color=colors_mc)
             ax.set_title(title)
             for j, v in enumerate(data):
@@ -1125,15 +1112,14 @@ if 'agents' in st.session_state and st.session_state['agents']:
         st.pyplot(fig_mc)
         plt.close()
 
-        # 決まり手
         if kim_counts:
             st.markdown("#### 🎯 決まり手分布")
             fig_k, ax_k = plt.subplots(figsize=(6, 3))
             k_labels = list(kim_counts.keys())
-            k_vals = [kim_counts[k]/n_sims*100 for k in k_labels]
+            k_vals = [kim_counts[kk]/n_sims*100 for kk in k_labels]
             ax_k.bar(k_labels, k_vals, color='#3498db')
             for j, v in enumerate(k_vals):
-                ax_k.text(j, v+0.3, f'{v:.1f}%', ha='center', fontsize=9)
+                ax_k.text(j, v + 0.3, f'{v:.1f}%', ha='center', fontsize=9)
             ax_k.set_ylabel('%')
             ax_k.set_title('決まり手分布')
             plt.tight_layout()
@@ -1156,7 +1142,8 @@ if 'agents' in st.session_state and st.session_state['agents']:
     </div>
     """, unsafe_allow_html=True)
 
-    odds_method = st.radio("オッズ取得方法",
+    odds_method = st.radio(
+        "オッズ取得方法",
         ["🌐 自動取得 (公式サイト)", "📋 テキスト貼り付け", "✏️ 手動入力"],
         horizontal=True, key="odds_method")
 
@@ -1164,7 +1151,8 @@ if 'agents' in st.session_state and st.session_state['agents']:
         st.info("💡 公式サイトからオッズを自動取得します（レース締切後のオッズ）")
         col_ov, col_od, col_or = st.columns(3)
         with col_ov:
-            ov = st.selectbox("会場", venue_list, index=venue_list.index(selected_venue), key="ov")
+            ov = st.selectbox("会場", venue_list,
+                              index=venue_list.index(selected_venue), key="ov")
         with col_od:
             od = st.date_input("日付", value=race_date, key="od")
         with col_or:
@@ -1178,13 +1166,19 @@ if 'agents' in st.session_state and st.session_state['agents']:
             if tri_odds and len(tri_odds) >= 60:
                 st.success(f"✅ {len(tri_odds)}通りの3連単オッズを取得！")
                 st.session_state['tri_odds'] = tri_odds
+                # 検証表示
+                with st.expander("📊 取得オッズ確認 (上位10件)", expanded=False):
+                    sorted_odds = sorted(tri_odds.items(), key=lambda x: x[1])
+                    check_rows = [{'買い目': k, 'オッズ': v} for k, v in sorted_odds[:10]]
+                    st.dataframe(pd.DataFrame(check_rows), use_container_width=True)
             else:
                 st.warning("⚠️ 取得できませんでした。テキスト貼り付けをお試しください。")
 
     elif odds_method == "📋 テキスト貼り付け":
-        odds_txt = st.text_area("3連単オッズテキスト", height=250,
-                                 placeholder="公式サイトからコピーしたテキスト or '1-2-3 5.0' 形式...",
-                                 key="odds_txt")
+        odds_txt = st.text_area(
+            "3連単オッズテキスト", height=250,
+            placeholder="公式サイトからコピーしたテキスト or '1-2-3 5.0' 形式...",
+            key="odds_txt")
         if st.button("🔍 オッズ解析", key="btn_parse_odds"):
             if odds_txt.strip():
                 tri_odds = parse_pasted_odds(odds_txt)
@@ -1195,14 +1189,16 @@ if 'agents' in st.session_state and st.session_state['agents']:
                     st.warning(f"⚠️ {len(tri_odds)}通りのみ。フォーマット確認してください。")
 
     elif odds_method == "✏️ 手動入力":
-        manual_odds = st.text_area("買い目とオッズ (1行1組)", height=200,
-                                    placeholder="1-2-3 5.0\n1-3-2 8.5\n...", key="manual_odds")
+        manual_odds = st.text_area(
+            "買い目とオッズ (1行1組)", height=200,
+            placeholder="1-2-3 5.0\n1-3-2 8.5\n...", key="manual_odds")
         if st.button("📝 確定", key="btn_manual_odds"):
             tri_odds = {}
             for line in manual_odds.strip().split('\n'):
                 m = re.match(r'(\d)\s*-\s*(\d)\s*-\s*(\d)\s+([\d,.]+)', line.strip())
                 if m:
-                    tri_odds[f"{m.group(1)}-{m.group(2)}-{m.group(3)}"] = float(m.group(4).replace(',',''))
+                    tri_odds[f"{m.group(1)}-{m.group(2)}-{m.group(3)}"] = float(
+                        m.group(4).replace(',', ''))
             if tri_odds:
                 st.success(f"✅ {len(tri_odds)}通り登録！")
                 st.session_state['tri_odds'] = tri_odds
@@ -1212,7 +1208,9 @@ if 'agents' in st.session_state and st.session_state['agents']:
         st.markdown("---")
         st.markdown("### 💰 期待値計算")
 
-        ev_sims = st.slider("期待値シミュレーション回数", 1000, 50000, 10000, 1000, key="ev_sims")
+        ev_sims = st.slider(
+            "期待値シミュレーション回数",
+            1000, 50000, 10000, 1000, key="ev_sims")
 
         if st.button("💰 期待値を計算する", key="btn_ev", type="primary"):
             tri_odds = st.session_state['tri_odds']
@@ -1221,7 +1219,8 @@ if 'agents' in st.session_state and st.session_state['agents']:
                 synth = compute_synthetic_odds(tri_odds)
 
             st.write(f"🎲 モンテカルロ ({ev_sims}回)...")
-            sim_probs = run_ev_simulation(agents, conditions, selected_venue, race_month, ev_sims)
+            sim_probs = run_ev_simulation(
+                agents, conditions, selected_venue, race_month, ev_sims)
 
             with st.spinner("💹 期待値算出中..."):
                 ev_results = compute_expected_values(synth, sim_probs)
@@ -1253,9 +1252,12 @@ if 'agents' in st.session_state and st.session_state['agents']:
                         prof_n = sum(1 for r in rows if r['判定'] == '🟢 買い')
 
                         c1, c2, c3 = st.columns(3)
-                        with c1: st.metric("総買い目", len(rows))
-                        with c2: st.metric("プラス期待値", f"{prof_n}件")
-                        with c3: st.metric("最大EV", f"{max(r['期待値'] for r in rows):.2f}")
+                        with c1:
+                            st.metric("総買い目", len(rows))
+                        with c2:
+                            st.metric("プラス期待値", f"{prof_n}件")
+                        with c3:
+                            st.metric("最大EV", f"{max(r['期待値'] for r in rows):.2f}")
 
                         st.markdown(f"#### 📈 {tname} 期待値ランキング Top20")
                         disp = df.head(20).reset_index(drop=True)
@@ -1268,9 +1270,10 @@ if 'agents' in st.session_state and st.session_state['agents']:
                                 return ['background-color: #fff3cd'] * len(row)
                             return [''] * len(row)
 
-                        st.dataframe(disp.style.apply(hl, axis=1), use_container_width=True)
+                        st.dataframe(
+                            disp.style.apply(hl, axis=1),
+                            use_container_width=True)
 
-                        # グラフ
                         top15 = df.head(15)
                         fig_e, ax_e = plt.subplots(figsize=(10, 5))
                         c_ev = ['#27ae60' if v > 1.0 else '#f39c12' if v > 0.5 else '#e74c3c'
@@ -1278,7 +1281,8 @@ if 'agents' in st.session_state and st.session_state['agents']:
                         ax_e.barh(range(len(top15)), top15['期待値'].values, color=c_ev)
                         ax_e.set_yticks(range(len(top15)))
                         ax_e.set_yticklabels(top15['買い目'].values)
-                        ax_e.axvline(x=1.0, color='red', linestyle='--', linewidth=2, label='EV=1.0')
+                        ax_e.axvline(x=1.0, color='red', linestyle='--',
+                                     linewidth=2, label='EV=1.0')
                         ax_e.set_xlabel('期待値')
                         ax_e.set_title(f'{tname} 期待値 Top15')
                         ax_e.legend()
@@ -1291,11 +1295,11 @@ if 'agents' in st.session_state and st.session_state['agents']:
             st.markdown("---")
             st.markdown("### 🏆 おすすめ買い目 (期待値 > 1.0)")
             all_prof = []
-            for tt, name in ticket_names.items():
+            for tt, tname in ticket_names.items():
                 for key, info in ev_results[tt].items():
                     if info['profitable'] and info['odds'] > 0:
                         all_prof.append({
-                            '券種': name, '買い目': key,
+                            '券種': tname, '買い目': key,
                             'オッズ': info['odds'],
                             '的中確率': f"{info['probability']*100:.2f}%",
                             '期待値': info['expected_value']
@@ -1306,30 +1310,34 @@ if 'agents' in st.session_state and st.session_state['agents']:
                 st.dataframe(pdf, use_container_width=True)
 
                 st.markdown("#### 💡 買い目ガイド")
-                for name in ticket_names.values():
-                    subset = [r for r in all_prof if r['券種'] == name]
+                for tname in ticket_names.values():
+                    subset = [r for r in all_prof if r['券種'] == tname]
                     if subset:
-                        top3 = sorted(subset, key=lambda x: x['期待値'], reverse=True)[:3]
-                        recs = " / ".join([f"**{r['買い目']}** (EV={r['期待値']:.2f})" for r in top3])
-                        st.write(f"**{name}**: {recs}")
+                        top3_items = sorted(subset, key=lambda x: x['期待値'], reverse=True)[:3]
+                        recs = " / ".join(
+                            [f"**{r['買い目']}** (EV={r['期待値']:.2f})" for r in top3_items])
+                        st.write(f"**{tname}**: {recs}")
             else:
                 st.info("期待値 > 1.0 の買い目はありません。0.8以上も参考にしてください。")
                 near = []
-                for tt, name in ticket_names.items():
+                for tt, tname in ticket_names.items():
                     for key, info in ev_results[tt].items():
                         if info['expected_value'] > 0.8 and info['odds'] > 0:
                             near.append({
-                                '券種': name, '買い目': key,
+                                '券種': tname, '買い目': key,
                                 'オッズ': info['odds'],
                                 '的中確率': f"{info['probability']*100:.2f}%",
                                 '期待値': info['expected_value']
                             })
                 if near:
                     st.markdown("#### 📊 準おすすめ (EV > 0.8)")
-                    st.dataframe(pd.DataFrame(near).sort_values('期待値', ascending=False).head(20),
-                                 use_container_width=True)
+                    st.dataframe(
+                        pd.DataFrame(near).sort_values('期待値', ascending=False).head(20),
+                        use_container_width=True)
 
-            st.caption("⚠️ 期待値はシミュレーション推定値です。実際の結果を保証しません。投票は自己責任で。")
+            st.caption(
+                "⚠️ 期待値はシミュレーション推定値です。"
+                "実際の結果を保証しません。投票は自己責任で。")
 
 # ----------------------------------------------------------
 # フッター
@@ -1337,7 +1345,7 @@ if 'agents' in st.session_state and st.session_state['agents']:
 st.markdown("---")
 st.markdown("""
 <div style='text-align: center; color: #888; padding: 20px;'>
-    🚤 ボートレース AI シミュレーター v3.0 ｜ 場別プロファイル対応版<br>
-    全24場のコース別成績・決まり手・水面特性を反映したシミュレーション
+    🚤 ボートレース AI シミュレーター v3.1 ｜ 場別プロファイル対応版<br>
+    全24場のコース別成績・決まり手・水面特性を反映 ｜ オッズ自動取得修正済
 </div>
 """, unsafe_allow_html=True)
