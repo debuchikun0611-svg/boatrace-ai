@@ -916,597 +916,724 @@ if run_clicked:
         st.pyplot(fig_k); plt.close(fig_k)
 
         st.warning("⚠️ このシミュレーションは統計モデルに基づく参考値です。実際のレース結果を保証するものではありません。")
-        # ============================================================
-# ★★★ オッズ入力 ＆ 合成オッズ ＆ 期待値 計算セクション ★★★
+       # ============================================================
+# 🎰 オッズ自動取得 & 期待値計算セクション (v2.0)
 # ============================================================
+import itertools
+from urllib.request import urlopen, Request
+from io import StringIO
 
 st.markdown("---")
 st.markdown("""
-<div style='background: linear-gradient(135deg, #1a472a 0%, #2d5a27 100%);
-            color: white; padding: 20px; border-radius: 12px; text-align: center; margin: 20px 0;'>
-    <h2 style='margin:0; color:#7dff7d;'>💰 オッズ分析 & 期待値計算</h2>
-    <p style='color:#aaa; margin:5px 0 0 0;'>3連単オッズから全券種の合成オッズ・期待値を算出</p>
+<div style='background: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%);
+            padding: 20px; border-radius: 15px; margin: 10px 0;'>
+    <h2 style='color: #e94560; text-align: center;'>🎰 オッズ分析 & 期待値計算</h2>
+    <p style='color: #eee; text-align: center;'>
+        3連単オッズを自動取得し、全券種（2連単・2連複・3連複・拡連複）の合成オッズと期待値を計算します
+    </p>
 </div>
 """, unsafe_allow_html=True)
 
-st.markdown("""
-**使い方**: ボートレース公式サイトのオッズページ（3連単）を `Ctrl+A` → `Ctrl+C` でコピーして貼り付けてください。
-または、手動で各組合せのオッズを入力できます。
-""")
+# --- 会場コード辞書 ---
+VENUE_CODES = {
+    "桐生": "01", "戸田": "02", "江戸川": "03", "平和島": "04", "多摩川": "05",
+    "浜名湖": "06", "蒲郡": "07", "常滑": "08", "津": "09", "三国": "10",
+    "びわこ": "11", "住之江": "12", "尼崎": "13", "鳴門": "14", "丸亀": "15",
+    "児島": "16", "宮島": "17", "徳山": "18", "下関": "19", "若松": "20",
+    "芦屋": "21", "福岡": "22", "唐津": "23", "大村": "24"
+}
 
-# ============================================================
-# 3連単オッズ パーサー
-# ============================================================
-
-def parse_trifecta_odds(text: str) -> Dict[str, float]:
+# =============================================================
+# 3連単オッズ取得関数 (公式サイトからスクレイピング)
+# =============================================================
+def fetch_trifecta_odds_from_official(venue_code: str, date_str: str, race_no: int) -> dict:
     """
-    公式サイト/ボートレース日和の3連単オッズテキストを解析
-    戻り値: {"1-2-3": 5.0, "1-2-4": 4.6, ...} の辞書
+    boatrace.jp から3連単オッズを取得する。
+    venue_code: "18" (徳山), date_str: "20260227", race_no: 1-12
+    戻り値: {"1-2-3": 47.2, "1-2-4": 60.3, ...} の辞書 (120通り)
     """
+    url = f"https://www.boatrace.jp/owpc/pc/race/odds3t?rno={race_no}&jcd={venue_code}&hd={date_str}"
+    
+    try:
+        req = Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+        html_content = urlopen(req, timeout=10).read()
+    except Exception as e:
+        st.error(f"オッズページの取得に失敗しました: {e}")
+        return {}
+    
+    try:
+        from bs4 import BeautifulSoup
+        soup = BeautifulSoup(html_content, 'html.parser')
+    except ImportError:
+        st.error("BeautifulSoup がインストールされていません。requirements.txt に beautifulsoup4 を追加してください。")
+        return {}
+    
+    # テーブルを探す: class="is-p3-0" の table、または oddsPoint を含むテーブル
     odds_dict = {}
-    lines = text.strip().split('\n')
-    lines = [l.strip() for l in lines if l.strip()]
-
-    # ---- 方式1: 公式サイトのフォーマット ----
-    # "2   3   5.0" のようなパターン（1着は列ヘッダーから判定）
-    current_first = None  # 1着艇番
-    current_second = None  # 2着艇番
-
-    for line in lines:
-        # 1着が含まれる行: "1   黒野　　元基" -> 1着=1
-        header_match = re.match(r'^(\d)\s+[\u4e00-\u9fff]', line)
-        if header_match:
-            current_first = int(header_match.group(1))
-            continue
-
-        # タブ/スペース区切りで数値ペアを抽出
-        # "2   3   5.0     1   3   91.0   ..." のパターン
-        # 各列は「2着 3着 オッズ」の3つ組
-        tokens = re.split(r'[\t ]+', line.strip())
-
-        # 全トークンから「整数 整数 小数」の3つ組を探す
-        i = 0
-        while i < len(tokens) - 2:
+    
+    # 方法1: oddsPoint クラスの td を持つ tbody を探す
+    all_tables = soup.find_all('table')
+    target_table = None
+    for table in all_tables:
+        if table.find('td', class_='oddsPoint'):
+            target_table = table
+            break
+    
+    if target_table is None:
+        # 方法2: CSS selector で直接指定
+        selectors = [
+            'body > main > div > div > div > div.contentsFrame1_inner > div:nth-child(6) > table',
+            'div.contentsFrame1_inner table',
+            'table.is-w495'
+        ]
+        for sel in selectors:
+            target_table = soup.select_one(sel)
+            if target_table and target_table.find('td', class_='oddsPoint'):
+                break
+            target_table = None
+    
+    if target_table is None:
+        # 方法3: テキストからパース (フォールバック)
+        return _parse_odds_from_text(soup.get_text())
+    
+    # tbody の tr からオッズを抽出
+    tbody = target_table.find('tbody')
+    if tbody is None:
+        tbody = target_table
+    
+    rows = tbody.find_all('tr')
+    
+    odds_values = []
+    for row in rows:
+        cells = row.find_all('td', class_='oddsPoint')
+        for cell in cells:
+            text = cell.get_text(strip=True)
             try:
-                a = tokens[i]
-                b = tokens[i+1]
-                c = tokens[i+2]
-
-                if re.match(r'^\d$', a) and re.match(r'^\d$', b) and re.match(r'^\d+\.?\d*$', c):
-                    second = int(a)
-                    third = int(b)
-                    odds_val = float(c)
-
-                    if 1 <= second <= 6 and 1 <= third <= 6 and odds_val > 0:
-                        # 1着の推定: current_firstがあればそれ、なければ列位置から推定
-                        if current_first:
-                            key = f"{current_first}-{second}-{third}"
-                            if key not in odds_dict:
-                                odds_dict[key] = odds_val
-                        i += 3
-                        continue
-                i += 1
-            except (ValueError, IndexError):
-                i += 1
-
-    # ---- 方式2: 直接的なパターン "1-2-3 5.0" ----
-    if len(odds_dict) < 10:
-        for line in lines:
-            matches = re.findall(r'(\d)-(\d)-(\d)\s+(\d+\.?\d*)', line)
-            for m in matches:
-                key = f"{m[0]}-{m[1]}-{m[2]}"
-                odds_dict[key] = float(m[3])
-
-    # ---- 方式3: 公式サイトの列構造を再解析 ----
-    if len(odds_dict) < 10:
-        # 1着ごとのブロックで再解析
+                odds_values.append(float(text))
+            except ValueError:
+                odds_values.append(0.0)  # 特払い等
+    
+    # 120通りの3連単オッズを辞書に格納
+    # テーブル構造: 1着固定で、2着-3着の組み合わせ順に並ぶ
+    # 行の構造: 1着=1,2着=2,3着=3,4,5,6 / 1着=1,2着=3,3着=2,4,5,6 / ...
+    # 各行に6個のオッズ (6つの3着候補 - ただし1着,2着を除くので4個)
+    
+    # 公式サイトの構造に合わせたマッピング
+    # 20行 × 6列 = 120通り (ただし実際は 20行 × 可変列)
+    
+    if len(odds_values) == 120:
+        # きれいに120個取れた場合
+        idx = 0
         for first in range(1, 7):
-            for line in lines:
-                tokens = re.split(r'[\t ]+', line.strip())
-                i = 0
-                while i < len(tokens) - 2:
-                    try:
-                        a, b, c = tokens[i], tokens[i+1], tokens[i+2]
-                        if re.match(r'^\d$', a) and re.match(r'^\d$', b):
-                            second, third = int(a), int(b)
-                            odds_val = float(c)
-                            if (1 <= second <= 6 and 1 <= third <= 6 and
-                                second != third and odds_val > 0):
-                                # 1着を推定 (second, thirdと異なる番号)
-                                for f in range(1, 7):
-                                    if f != second and f != third:
-                                        key = f"{f}-{second}-{third}"
-                                        if key not in odds_dict and odds_val > 1.0:
-                                            # 重複チェック
-                                            pass
-                            i += 3
-                            continue
-                    except:
-                        pass
-                    i += 1
-
-    return odds_dict
-
-
-def parse_odds_from_official(text: str) -> Dict[str, float]:
-    """
-    公式サイトの3連単オッズテーブルをより正確にパース
-
-    公式フォーマット:
-    1着ヘッダー（選手名付き）の後に、
-    2着  3着  オッズ  がブロックで並ぶ
-    """
-    odds_dict = {}
-    lines = text.strip().split('\n')
-    lines = [l.strip() for l in lines if l.strip()]
-
-    current_first = None
-
-    for line in lines:
-        # 1着のヘッダー行検出: "1   黒野　　元基" など
-        m = re.match(r'^(\d)\s+[\u4e00-\u9fff\u3000-\u303f]', line)
-        if m:
-            current_first = int(m.group(1))
-            continue
-
-        if current_first is None:
-            continue
-
-        # この行からオッズデータを抽出
-        # 複数列が並ぶ場合: "2   3   5.0     1   3   91.0    ..."
-        # 2着から始まる場合: "4   4.6" (前行の2着を継続)
-        tokens = re.split(r'\s+', line.strip())
-
-        # 「整数 整数 数値」 の3つ組を全て探す
-        i = 0
-        temp_second = None
-        while i < len(tokens):
-            tok = tokens[i]
-
-            # 2着番号と3着番号+オッズの組
-            if re.match(r'^\d$', tok):
-                val = int(tok)
-                if 1 <= val <= 6:
-                    if i + 2 < len(tokens):
-                        next1 = tokens[i+1]
-                        next2 = tokens[i+2]
-                        # パターン: 2着 3着 オッズ
-                        if (re.match(r'^\d$', next1) and
-                            re.match(r'^\d+\.?\d*$', next2)):
-                            second = val
-                            third = int(next1)
-                            odds_val = float(next2)
-                            if (second != current_first and third != current_first
-                                and second != third and odds_val > 0):
-                                key = f"{current_first}-{second}-{third}"
-                                odds_dict[key] = odds_val
-                                temp_second = second
-                            i += 3
-                            continue
-                    # パターン: 3着 オッズ (前の2着を継続)
-                    if i + 1 < len(tokens) and temp_second is not None:
-                        next1 = tokens[i+1]
-                        if re.match(r'^\d+\.?\d*$', next1):
-                            third = val
-                            odds_val = float(next1)
-                            if (third != current_first and third != temp_second
-                                and odds_val > 0):
-                                key = f"{current_first}-{temp_second}-{third}"
-                                odds_dict[key] = odds_val
-                            i += 2
-                            continue
-            i += 1
-
-    return odds_dict
-
-
-def merge_odds_parsers(text: str) -> Dict[str, float]:
-    """複数パーサーの結果をマージ"""
-    odds1 = parse_trifecta_odds(text)
-    odds2 = parse_odds_from_official(text)
-    # 多い方を採用、足りない分を補完
-    if len(odds2) >= len(odds1):
-        merged = dict(odds2)
-        for k, v in odds1.items():
-            if k not in merged:
-                merged[k] = v
+            for second in range(1, 7):
+                if second == first:
+                    continue
+                for third in range(1, 7):
+                    if third == first or third == second:
+                        continue
+                    key = f"{first}-{second}-{third}"
+                    if idx < len(odds_values):
+                        odds_dict[key] = odds_values[idx]
+                        idx += 1
     else:
-        merged = dict(odds1)
-        for k, v in odds2.items():
-            if k not in merged:
-                merged[k] = v
-    return merged
+        # テーブル構造に合わせた解析
+        # 各1着固定で4行、各行4オッズ (他の5艇から2着を選び、残り4艇が3着)
+        idx = 0
+        for first in range(1, 7):
+            others = [x for x in range(1, 7) if x != first]
+            for second in others:
+                thirds = [x for x in range(1, 7) if x != first and x != second]
+                for third in thirds:
+                    key = f"{first}-{second}-{third}"
+                    if idx < len(odds_values):
+                        odds_dict[key] = odds_values[idx]
+                        idx += 1
+    
+    return odds_dict
 
 
-# ============================================================
+def _parse_odds_from_text(text: str) -> dict:
+    """テキストからオッズを抽出するフォールバック"""
+    import re
+    odds_dict = {}
+    # "X-Y-Z  odds" パターン
+    pattern = r'(\d)-(\d)-(\d)\s+([\d.]+)'
+    matches = re.findall(pattern, text)
+    for m in matches:
+        key = f"{m[0]}-{m[1]}-{m[2]}"
+        try:
+            odds_dict[key] = float(m[3])
+        except ValueError:
+            pass
+    return odds_dict
+
+
+def parse_pasted_odds_text(text: str) -> dict:
+    """
+    公式サイトからコピペしたテキストを解析して3連単オッズ辞書を返す。
+    対応フォーマット:
+      - "1-2-3  5.0" 形式
+      - 公式テーブルコピー形式 (数字が並ぶ)
+    """
+    import re
+    odds_dict = {}
+    
+    # パターン1: "X-Y-Z  odds" 形式
+    pattern1 = re.findall(r'(\d)\s*[-=]\s*(\d)\s*[-=]\s*(\d)\s+([\d,.]+)', text)
+    if pattern1:
+        for m in pattern1:
+            key = f"{m[0]}-{m[1]}-{m[2]}"
+            try:
+                odds_dict[key] = float(m[3].replace(',', ''))
+            except ValueError:
+                pass
+        if len(odds_dict) >= 60:
+            return odds_dict
+    
+    # パターン2: crawlerで取得したテキストフォーマット
+    # "2   3   6.2     1   3   108.8  ..." のような構造
+    lines = text.strip().split('\n')
+    
+    # 各1着艇ごとのブロックを検出
+    current_first = None
+    current_second = None
+    
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+        
+        # 数字とオッズの組み合わせを探す
+        # "2   3   6.2" → 2着=2, 3着=3, オッズ=6.2
+        tokens = line.split()
+        
+        # 各トークンペア (数字, 小数) をスキャン
+        i = 0
+        while i < len(tokens) - 1:
+            try:
+                boat_num = int(tokens[i])
+                if 1 <= boat_num <= 6:
+                    # 次のトークンがオッズか？
+                    next_val = tokens[i + 1].replace(',', '')
+                    odds_val = float(next_val)
+                    if 1.0 <= odds_val <= 99999:
+                        # これは 3着=boat_num, オッズ=odds_val と解釈
+                        # ただし2着と1着の情報が必要
+                        pass
+                    i += 2
+                    continue
+            except (ValueError, IndexError):
+                pass
+            i += 1
+    
+    # パターン3: 数字のみの行を集めて120個のオッズとして解釈
+    all_numbers = re.findall(r'(?<!\d)(\d{1,5}(?:\.\d+)?)(?!\d)', text)
+    float_candidates = []
+    for n in all_numbers:
+        try:
+            v = float(n)
+            if 1.0 <= v <= 99999:
+                float_candidates.append(v)
+        except ValueError:
+            pass
+    
+    if len(float_candidates) >= 120:
+        # 先頭120個を使う
+        idx = 0
+        for first in range(1, 7):
+            for second in range(1, 7):
+                if second == first:
+                    continue
+                for third in range(1, 7):
+                    if third == first or third == second:
+                        continue
+                    key = f"{first}-{second}-{third}"
+                    odds_dict[key] = float_candidates[idx]
+                    idx += 1
+        return odds_dict
+    
+    return odds_dict
+
+
+# =============================================================
 # 合成オッズ計算
-# ============================================================
-
-def compute_synthetic_odds(trifecta_odds: Dict[str, float]) -> Dict:
+# =============================================================
+def compute_all_synthetic_odds(trifecta_odds: dict) -> dict:
     """
-    3連単オッズから全券種の合成オッズを計算
-
-    合成オッズの計算式:
-    1 / 合成オッズ = Σ (1 / 各オッズ)
-    → 合成オッズ = 1 / Σ(1/各オッズ)
+    3連単オッズから全券種の合成オッズを計算する。
+    合成オッズ = 1 / Σ(1/各該当オッズ)
+    
+    券種:
+      - 3連単 (trifecta): そのまま
+      - 3連複 (trio): 1-2-3 と同着順の全順列を合成
+      - 2連単 (exacta): 1着-2着固定、3着は全通り
+      - 2連複 (quinella): 1着-2着の順不問、3着は全通り
+      - 拡連複 (wide/quinella_place): 2艇が3着以内に入る全組合せ
     """
-    results = {
-        'trifecta': trifecta_odds,  # 3連単: そのまま
-        'trio': {},       # 3連複
-        'exacta': {},     # 2連単
-        'quinella': {},   # 2連複
-        'wide': {},       # 拡連複
+    boats = [1, 2, 3, 4, 5, 6]
+    result = {
+        'trifecta': {},   # 3連単: 120通り
+        'trio': {},       # 3連複: 20通り
+        'exacta': {},     # 2連単: 30通り
+        'quinella': {},   # 2連複: 15通り
+        'wide': {},       # 拡連複: 15通り
     }
-
-    # ---- 3連複 (1-2-3着を順不同) ----
-    # 3連複 A-B-C = 3連単 A-B-C, A-C-B, B-A-C, B-C-A, C-A-B, C-B-A の合成
-    from itertools import permutations
-    trio_groups = {}  # key: "1-2-3" (ソート済み) -> [odds1, odds2, ...]
-    for key, odds in trifecta_odds.items():
-        parts = key.split('-')
-        sorted_key = '-'.join(map(str, sorted(int(p) for p in parts)))
-        if sorted_key not in trio_groups:
-            trio_groups[sorted_key] = []
-        trio_groups[sorted_key].append(odds)
-
-    for key, odds_list in trio_groups.items():
-        if odds_list:
-            # 合成オッズ = 1 / Σ(1/odds)
-            inv_sum = sum(1.0/o for o in odds_list if o > 0)
+    
+    # 3連単はそのまま
+    result['trifecta'] = dict(trifecta_odds)
+    
+    # 3連複: 3艇の組み合わせ (順不問)
+    for combo in itertools.combinations(boats, 3):
+        a, b, c = combo
+        key = f"{a}={b}={c}"
+        inv_sum = 0.0
+        count = 0
+        for perm in itertools.permutations(combo):
+            tkey = f"{perm[0]}-{perm[1]}-{perm[2]}"
+            if tkey in trifecta_odds and trifecta_odds[tkey] > 0:
+                inv_sum += 1.0 / trifecta_odds[tkey]
+                count += 1
+        if inv_sum > 0:
+            result['trio'][key] = round(1.0 / inv_sum, 1)
+        else:
+            result['trio'][key] = 0.0
+    
+    # 2連単: 1着-2着固定、3着は残り4艇のどれでもOK
+    for first in boats:
+        for second in boats:
+            if first == second:
+                continue
+            key = f"{first}-{second}"
+            inv_sum = 0.0
+            for third in boats:
+                if third == first or third == second:
+                    continue
+                tkey = f"{first}-{second}-{third}"
+                if tkey in trifecta_odds and trifecta_odds[tkey] > 0:
+                    inv_sum += 1.0 / trifecta_odds[tkey]
             if inv_sum > 0:
-                results['trio'][key] = round(1.0 / inv_sum, 1)
-
-    # ---- 2連単 (1着-2着を着順通り) ----
-    # 2連単 A-B = 3連単 A-B-C (Cは3~6号艇のすべて) の合成
-    exacta_groups = {}  # key: "1-2" -> [odds1, odds2, ...]
-    for key, odds in trifecta_odds.items():
-        parts = key.split('-')
-        exacta_key = f"{parts[0]}-{parts[1]}"
-        if exacta_key not in exacta_groups:
-            exacta_groups[exacta_key] = []
-        exacta_groups[exacta_key].append(odds)
-
-    for key, odds_list in exacta_groups.items():
-        if odds_list:
-            inv_sum = sum(1.0/o for o in odds_list if o > 0)
-            if inv_sum > 0:
-                results['exacta'][key] = round(1.0 / inv_sum, 1)
-
-    # ---- 2連複 (1着-2着を順不同) ----
-    # 2連複 A=B = 2連単 A-B + 2連単 B-A の合成
-    quinella_groups = {}
-    for key, odds in results['exacta'].items():
-        parts = key.split('-')
-        sorted_key = '-'.join(map(str, sorted(int(p) for p in parts)))
-        if sorted_key not in quinella_groups:
-            quinella_groups[sorted_key] = []
-        quinella_groups[sorted_key].append(odds)
-
-    for key, odds_list in quinella_groups.items():
-        if odds_list:
-            inv_sum = sum(1.0/o for o in odds_list if o > 0)
-            if inv_sum > 0:
-                results['quinella'][key] = round(1.0 / inv_sum, 1)
-
-    # ---- 拡連複 (3着以内の2艇を順不同) ----
-    # 拡連複 A=B = 3連単で A,Bが共に1-3着に入る全パターンの合成
-    wide_groups = {}
-    for key, odds in trifecta_odds.items():
-        parts = [int(p) for p in key.split('-')]
-        top3 = parts[:3]  # 1着,2着,3着
-        # 3着以内の2艇の全組合せ
-        for ci in range(3):
-            for cj in range(ci+1, 3):
-                pair = tuple(sorted([top3[ci], top3[cj]]))
-                pair_key = f"{pair[0]}-{pair[1]}"
-                if pair_key not in wide_groups:
-                    wide_groups[pair_key] = []
-                wide_groups[pair_key].append(odds)
-
-    for key, odds_list in wide_groups.items():
-        if odds_list:
-            inv_sum = sum(1.0/o for o in odds_list if o > 0)
-            if inv_sum > 0:
-                results['wide'][key] = round(1.0 / inv_sum, 1)
-
-    return results
+                result['exacta'][key] = round(1.0 / inv_sum, 1)
+            else:
+                result['exacta'][key] = 0.0
+    
+    # 2連複: 2艇の組み合わせが1着-2着 (順不問)、3着は残り4艇
+    for combo in itertools.combinations(boats, 2):
+        a, b = combo
+        key = f"{a}={b}"
+        inv_sum = 0.0
+        for perm in itertools.permutations(combo):
+            for third in boats:
+                if third in combo:
+                    continue
+                tkey = f"{perm[0]}-{perm[1]}-{third}"
+                if tkey in trifecta_odds and trifecta_odds[tkey] > 0:
+                    inv_sum += 1.0 / trifecta_odds[tkey]
+        if inv_sum > 0:
+            result['quinella'][key] = round(1.0 / inv_sum, 1)
+        else:
+            result['quinella'][key] = 0.0
+    
+    # 拡連複: 2艇が3着以内に入ればOK (順不問、3着目は残り4艇のどれか)
+    for combo in itertools.combinations(boats, 2):
+        a, b = combo
+        key = f"{a}={b}"
+        inv_sum = 0.0
+        # a,bが共に3着以内に入る3連単の全パターン
+        others = [x for x in boats if x not in combo]
+        for third_boat in others:
+            # 3艇 = {a, b, third_boat} の全順列
+            for perm in itertools.permutations([a, b, third_boat]):
+                tkey = f"{perm[0]}-{perm[1]}-{perm[2]}"
+                if tkey in trifecta_odds and trifecta_odds[tkey] > 0:
+                    inv_sum += 1.0 / trifecta_odds[tkey]
+        if inv_sum > 0:
+            result['wide'][key] = round(1.0 / inv_sum, 1)
+        else:
+            result['wide'][key] = 0.0
+    
+    return result
 
 
-# ============================================================
+# =============================================================
 # 期待値計算
-# ============================================================
-
-def compute_expected_values(synthetic_odds: Dict, sim_probabilities: Dict) -> Dict:
+# =============================================================
+def compute_expected_values(synthetic_odds: dict, sim_probabilities: dict) -> dict:
     """
-    シミュレーション確率 × オッズ = 期待値 を全券種で計算
-    期待値 > 1.0 なら理論上プラス
+    期待値 = シミュレーション確率 × オッズ
+    EV > 1.0 なら理論上プラス期待値
     """
     ev_results = {}
-
-    for bet_type, odds_dict in synthetic_odds.items():
-        ev_results[bet_type] = {}
-        for combo, odds in odds_dict.items():
-            prob = sim_probabilities.get(bet_type, {}).get(combo, 0)
-            if prob > 0 and odds > 0:
-                ev = prob * odds
-                ev_results[bet_type][combo] = {
-                    'odds': odds,
-                    'prob': prob,
-                    'ev': round(ev, 3),
-                    'profitable': ev > 1.0
-                }
-
+    for ticket_type in synthetic_odds:
+        ev_results[ticket_type] = {}
+        for key, odds in synthetic_odds[ticket_type].items():
+            prob = sim_probabilities.get(ticket_type, {}).get(key, 0.0)
+            ev = prob * odds
+            ev_results[ticket_type][key] = {
+                'odds': odds,
+                'probability': prob,
+                'expected_value': round(ev, 4),
+                'profitable': ev > 1.0
+            }
     return ev_results
 
 
-# ============================================================
-# オッズ入力UI
-# ============================================================
+def run_monte_carlo_for_ev(agents, conditions, n_sims=10000) -> dict:
+    """
+    モンテカルロシミュレーションを実行し、全券種の的中確率を算出する。
+    """
+    boats = [1, 2, 3, 4, 5, 6]
+    
+    # カウンタ初期化
+    counts = {
+        'trifecta': {},   # "1-2-3": count
+        'trio': {},       # "1=2=3": count
+        'exacta': {},     # "1-2": count
+        'quinella': {},   # "1=2": count
+        'wide': {},       # "1=2": count
+    }
+    
+    # 全キーを初期化
+    for perm in itertools.permutations(boats, 3):
+        counts['trifecta'][f"{perm[0]}-{perm[1]}-{perm[2]}"] = 0
+    for combo in itertools.combinations(boats, 3):
+        counts['trio'][f"{combo[0]}={combo[1]}={combo[2]}"] = 0
+    for perm in itertools.permutations(boats, 2):
+        counts['exacta'][f"{perm[0]}-{perm[1]}"] = 0
+    for combo in itertools.combinations(boats, 2):
+        counts['quinella'][f"{combo[0]}={combo[1]}"] = 0
+        counts['wide'][f"{combo[0]}={combo[1]}"] = 0
+    
+    sim = RaceSimulator(agents, conditions)
+    
+    progress_bar = st.progress(0)
+    
+    for i in range(n_sims):
+        result = sim.simulate_race()
+        order = result['finish_order']  # [lane1, lane2, lane3, lane4, lane5, lane6]
+        
+        top3 = order[:3]
+        
+        # 3連単
+        tkey = f"{top3[0]}-{top3[1]}-{top3[2]}"
+        if tkey in counts['trifecta']:
+            counts['trifecta'][tkey] += 1
+        
+        # 3連複
+        trio_sorted = sorted(top3)
+        trio_key = f"{trio_sorted[0]}={trio_sorted[1]}={trio_sorted[2]}"
+        if trio_key in counts['trio']:
+            counts['trio'][trio_key] += 1
+        
+        # 2連単
+        ekey = f"{top3[0]}-{top3[1]}"
+        if ekey in counts['exacta']:
+            counts['exacta'][ekey] += 1
+        
+        # 2連複
+        quin_sorted = sorted(top3[:2])
+        qkey = f"{quin_sorted[0]}={quin_sorted[1]}"
+        if qkey in counts['quinella']:
+            counts['quinella'][qkey] += 1
+        
+        # 拡連複 (3着以内の全2艇組合せ)
+        for combo in itertools.combinations(top3, 2):
+            wsorted = sorted(combo)
+            wkey = f"{wsorted[0]}={wsorted[1]}"
+            if wkey in counts['wide']:
+                counts['wide'][wkey] += 1
+        
+        if (i + 1) % (n_sims // 20) == 0:
+            progress_bar.progress((i + 1) / n_sims)
+    
+    progress_bar.progress(1.0)
+    
+    # 確率に変換
+    probabilities = {}
+    for ticket_type in counts:
+        probabilities[ticket_type] = {}
+        for key, count in counts[ticket_type].items():
+            probabilities[ticket_type][key] = count / n_sims
+    
+    return probabilities
 
-odds_tab_paste, odds_tab_manual = st.tabs(["📋 オッズ貼り付け", "✏️ 手動入力"])
+
+# =============================================================
+# UI: オッズ取得・分析セクション
+# =============================================================
+odds_method = st.radio(
+    "オッズ取得方法を選択:",
+    ["🌐 自動取得 (公式サイトから)", "📋 テキスト貼り付け", "✏️ 手動入力"],
+    horizontal=True,
+    key="odds_method_radio"
+)
 
 trifecta_odds = {}
 
-with odds_tab_paste:
-    st.markdown("""
-    公式サイトのオッズページ（3連単）→ `Ctrl+A` → `Ctrl+C` でコピーして貼り付け。
-    または、3連単オッズを `1-2-3 5.0` の形式で1行1組合せで入力。
-    """)
-
-    odds_text = st.text_area("3連単オッズデータ", value="", height=300,
-                              placeholder="公式サイトの3連単オッズをここに貼り付け...\n\nまたは:\n1-2-3 5.0\n1-2-4 4.6\n...")
-
-    if st.button("🔍 オッズ解析", key="odds_parse"):
-        if odds_text.strip():
-            trifecta_odds = merge_odds_parsers(odds_text)
-            if trifecta_odds:
-                st.session_state['trifecta_odds'] = trifecta_odds
-                st.success(f"✅ {len(trifecta_odds)}通りの3連単オッズを解析しました")
-            else:
-                st.warning("⚠️ オッズが解析できませんでした。手動入力を試してください。")
-
-with odds_tab_manual:
-    st.markdown("3連単オッズを直接入力できます。`1-2-3 5.0` の形式で1行ずつ入力してください。")
-
-    manual_text = st.text_area("3連単オッズ（手動）", height=300,
-                                placeholder="1-2-3 5.0\n1-2-4 4.6\n1-2-5 6.2\n1-2-6 13.9\n1-3-2 11.0\n...")
-
-    if st.button("📝 手動オッズ確定", key="odds_manual"):
-        if manual_text.strip():
-            manual_odds = {}
-            for line in manual_text.strip().split('\n'):
-                line = line.strip()
-                m = re.match(r'(\d)-(\d)-(\d)\s+(\d+\.?\d*)', line)
-                if m:
-                    key = f"{m.group(1)}-{m.group(2)}-{m.group(3)}"
-                    manual_odds[key] = float(m.group(4))
-            if manual_odds:
-                st.session_state['trifecta_odds'] = manual_odds
-                trifecta_odds = manual_odds
-                st.success(f"✅ {len(manual_odds)}通りを登録")
-
-# セッションから復元
-if 'trifecta_odds' in st.session_state and st.session_state['trifecta_odds']:
-    trifecta_odds = st.session_state['trifecta_odds']
-
-
-# ============================================================
-# 期待値計算＆表示
-# ============================================================
-
-if trifecta_odds and agents:
-    ev_btn = st.button("💰 期待値を計算", type="primary", use_container_width=True, key="ev_calc")
-
-    if ev_btn:
-        # --- 合成オッズ計算 ---
-        synthetic = compute_synthetic_odds(trifecta_odds)
-
-        # --- シミュレーション確率（モンテカルロ）---
-        st.markdown("### 📊 確率計算中...")
-        ev_n_sims = 10000
-        ev_progress = st.progress(0)
-
-        sim_probs = {
-            'trifecta': {},
-            'trio': {},
-            'exacta': {},
-            'quinella': {},
-            'wide': {},
-        }
-
-        for si in range(ev_n_sims):
-            if si % (ev_n_sims // 20) == 0:
-                ev_progress.progress(si / ev_n_sims)
-
-            sim = RaceSimulator(agents, condition)
-            r = sim.simulate_race()
-            o = r['finish_order']
-
-            # 3連単
-            tri_key = f"{o[0]}-{o[1]}-{o[2]}"
-            sim_probs['trifecta'][tri_key] = sim_probs['trifecta'].get(tri_key, 0) + 1
-
-            # 3連複
-            trio_key = '-'.join(map(str, sorted(o[:3])))
-            sim_probs['trio'][trio_key] = sim_probs['trio'].get(trio_key, 0) + 1
-
-            # 2連単
-            exa_key = f"{o[0]}-{o[1]}"
-            sim_probs['exacta'][exa_key] = sim_probs['exacta'].get(exa_key, 0) + 1
-
-            # 2連複
-            qui_key = '-'.join(map(str, sorted(o[:2])))
-            sim_probs['quinella'][qui_key] = sim_probs['quinella'].get(qui_key, 0) + 1
-
-            # 拡連複 (3着以内の2艇の全組合せ)
-            top3 = o[:3]
-            for ci in range(3):
-                for cj in range(ci+1, 3):
-                    pair = tuple(sorted([top3[ci], top3[cj]]))
-                    wide_key = f"{pair[0]}-{pair[1]}"
-                    sim_probs['wide'][wide_key] = sim_probs['wide'].get(wide_key, 0) + 1
-
-        ev_progress.progress(1.0)
-
-        # 確率に変換
-        for bet_type in sim_probs:
-            for key in sim_probs[bet_type]:
-                sim_probs[bet_type][key] /= ev_n_sims
-
-        # --- 期待値計算 ---
-        ev_results = compute_expected_values(synthetic, sim_probs)
-
-        # ============================================================
-        # 結果表示
-        # ============================================================
-
-        st.markdown("""
-        <div style='background:#1a1a2e; color:white; padding:15px; border-radius:10px; margin:15px 0;'>
-            <h3 style='color:#7dff7d; margin:0;'>💰 期待値分析結果</h3>
-            <p style='color:#aaa; margin:5px 0 0 0;'>期待値 > 1.0 の買い目は理論上プラス収支（緑で表示）</p>
-        </div>
-        """, unsafe_allow_html=True)
-
-        # 各券種のタブ
-        tab_3t, tab_3f, tab_2t, tab_2f, tab_wide = st.tabs([
-            "🎯 3連単", "🎯 3連複", "🎯 2連単", "🎯 2連複", "🎯 拡連複"
-        ])
-
-        def show_ev_table(bet_type, ev_data, title, show_top=30):
-            if not ev_data.get(bet_type):
-                st.warning(f"{title}のデータがありません")
-                return
-
-            items = ev_data[bet_type]
-            # 期待値降順でソート
-            sorted_items = sorted(items.items(), key=lambda x: x[1]['ev'], reverse=True)[:show_top]
-
-            rows = []
-            for combo, data in sorted_items:
-                ev_color = "🟢" if data['ev'] > 1.0 else "🔴" if data['ev'] < 0.5 else "🟡"
-                rows.append({
-                    '': ev_color,
-                    '組合せ': combo,
-                    'オッズ': f"{data['odds']:.1f}",
-                    '確率': f"{data['prob']*100:.2f}%",
-                    '期待値': f"{data['ev']:.3f}",
-                    '判定': '◎ 買い' if data['ev'] > 1.2 else '○ 妙味' if data['ev'] > 1.0 else '△' if data['ev'] > 0.7 else '✕'
-                })
-
-            df = pd.DataFrame(rows)
-            st.dataframe(df, hide_index=True, use_container_width=True)
-
-            # 期待値 > 1.0 の数
-            profitable = sum(1 for _, d in items.items() if d['ev'] > 1.0)
-            total = len(items)
-            st.info(f"📊 {title}: {total}通り中 **{profitable}通り** が期待値プラス（EV > 1.0）")
-
-        with tab_3t:
-            st.markdown(f"### 3連単 期待値ランキング（{len(ev_results.get('trifecta', {}))}通り）")
-            show_ev_table('trifecta', ev_results, '3連単', show_top=30)
-
-        with tab_3f:
-            st.markdown(f"### 3連複 合成オッズ & 期待値（{len(ev_results.get('trio', {}))}通り）")
-            show_ev_table('trio', ev_results, '3連複', show_top=20)
-
-        with tab_2t:
-            st.markdown(f"### 2連単 合成オッズ & 期待値（{len(ev_results.get('exacta', {}))}通り）")
-            show_ev_table('exacta', ev_results, '2連単', show_top=30)
-
-        with tab_2f:
-            st.markdown(f"### 2連複 合成オッズ & 期待値（{len(ev_results.get('quinella', {}))}通り）")
-            show_ev_table('quinella', ev_results, '2連複', show_top=15)
-
-        with tab_wide:
-            st.markdown(f"### 拡連複 合成オッズ & 期待値（{len(ev_results.get('wide', {}))}通り）")
-            show_ev_table('wide', ev_results, '拡連複', show_top=15)
-
-        # ============================================================
-        # 期待値サマリーグラフ
-        # ============================================================
-
-        st.markdown("### 📊 期待値サマリー")
-
-        fig, axes = plt.subplots(1, 2, figsize=(16, 6))
-
-        # --- 左: 券種別の期待値プラス率 ---
-        bet_names_jp = {'trifecta': '3連単', 'trio': '3連複', 'exacta': '2連単',
-                        'quinella': '2連複', 'wide': '拡連複'}
-        bet_types_order = ['trifecta', 'trio', 'exacta', 'quinella', 'wide']
-
-        profit_rates = []
-        avg_evs = []
-        for bt in bet_types_order:
-            items = ev_results.get(bt, {})
-            if items:
-                pr = sum(1 for d in items.values() if d['ev'] > 1.0) / len(items) * 100
-                ae = np.mean([d['ev'] for d in items.values()])
-            else:
-                pr = 0; ae = 0
-            profit_rates.append(pr)
-            avg_evs.append(ae)
-
-        x_labels = [bet_names_jp[bt] for bt in bet_types_order]
-        colors_bar = ['#FF6B6B', '#4ECDC4', '#45B7D1', '#96CEB4', '#FFEAA7']
-
-        axes[0].bar(x_labels, profit_rates, color=colors_bar, edgecolor='black', linewidth=0.5)
-        axes[0].set_title('券種別 期待値プラス率', fontweight='bold')
-        axes[0].set_ylabel('EV > 1.0 の割合 (%)')
-        for j, v in enumerate(profit_rates):
-            axes[0].text(j, v+0.5, f'{v:.1f}%', ha='center', fontsize=10, fontweight='bold')
-
-        # --- 右: 2連単 期待値TOP10 ---
-        exa_items = ev_results.get('exacta', {})
-        if exa_items:
-            top_exa = sorted(exa_items.items(), key=lambda x: x[1]['ev'], reverse=True)[:10]
-            combos = [c for c, _ in top_exa]
-            evs = [d['ev'] for _, d in top_exa]
-            colors_ev = ['#2ecc71' if e > 1.0 else '#e74c3c' for e in evs]
-            axes[1].barh(combos[::-1], evs[::-1], color=colors_ev[::-1], edgecolor='black', linewidth=0.5)
-            axes[1].axvline(x=1.0, color='red', linestyle='--', alpha=0.7, label='期待値 = 1.0')
-            axes[1].set_title('2連単 期待値TOP10', fontweight='bold')
-            axes[1].set_xlabel('期待値')
-            axes[1].legend()
-            for bar, val in zip(axes[1].patches, evs[::-1]):
-                axes[1].text(bar.get_width()+0.01, bar.get_y()+bar.get_height()/2,
-                            f'{val:.2f}', va='center', fontsize=9)
-
-        plt.tight_layout()
-        st.pyplot(fig)
-        plt.close(fig)
-
-        # ============================================================
-        # おすすめ買い目
-        # ============================================================
-
-        st.markdown("### 🏆 おすすめ買い目（期待値 > 1.0）")
-
-        all_profitable = []
-        for bt in bet_types_order:
-            for combo, data in ev_results.get(bt, {}).items():
-                if data['ev'] > 1.0:
-                    all_profitable.append({
-                        '券種': bet_names_jp[bt],
-                        '組合せ': combo,
-                        'オッズ': data['odds'],
-                        '確率': f"{data['prob']*100:.2f}%",
-                        '期待値': data['ev'],
-                    })
-
-        if all_profitable:
-            all_profitable.sort(key=lambda x: x['期待値'], reverse=True)
-            df_profit = pd.DataFrame(all_profitable[:30])
-            st.dataframe(df_profit, hide_index=True, use_container_width=True)
-            st.success(f"🎉 全{len(all_profitable)}通りの期待値プラス買い目が見つかりました！")
+if odds_method == "🌐 自動取得 (公式サイトから)":
+    st.info("💡 ボートレース公式サイト (boatrace.jp) から3連単オッズを自動取得します。レース締切後のオッズが取得されます。")
+    
+    col_v, col_d, col_r = st.columns(3)
+    with col_v:
+        venue_name = st.selectbox("会場", list(VENUE_CODES.keys()), 
+                                   index=list(VENUE_CODES.keys()).index("徳山"),
+                                   key="odds_venue")
+    with col_d:
+        from datetime import date
+        odds_date = st.date_input("日付", value=date(2026, 2, 27), key="odds_date")
+    with col_r:
+        race_no = st.number_input("レース番号", min_value=1, max_value=12, value=1, key="odds_race_no")
+    
+    if st.button("🔍 オッズを自動取得", key="btn_fetch_odds", type="primary"):
+        venue_code = VENUE_CODES[venue_name]
+        date_str = odds_date.strftime("%Y%m%d")
+        
+        with st.spinner(f"📡 {venue_name} {odds_date} {race_no}R のオッズを取得中..."):
+            trifecta_odds = fetch_trifecta_odds_from_official(venue_code, date_str, race_no)
+        
+        if trifecta_odds and len(trifecta_odds) > 0:
+            st.success(f"✅ {len(trifecta_odds)}通りの3連単オッズを取得しました！")
+            st.session_state['trifecta_odds'] = trifecta_odds
+            st.session_state['odds_source'] = f"{venue_name} {odds_date} {race_no}R (自動取得)"
+            
+            # オッズ表を表示
+            with st.expander("📊 取得した3連単オッズ一覧", expanded=False):
+                odds_df = pd.DataFrame([
+                    {"買い目": k, "オッズ": v} for k, v in sorted(trifecta_odds.items())
+                ])
+                st.dataframe(odds_df, use_container_width=True, height=400)
         else:
-            st.warning("期待値 > 1.0 の買い目は見つかりませんでした。")
+            st.warning("⚠️ オッズを取得できませんでした。レース前またはデータ未公開の可能性があります。テキスト貼り付けをお試しください。")
 
-        st.markdown("---")
-        st.warning("⚠️ 期待値はシミュレーション確率×オッズの理論値です。実際のレース結果を保証するものではありません。"
-                   "オッズは変動します。余裕のある範囲でお楽しみください。")
+elif odds_method == "📋 テキスト貼り付け":
+    st.info("💡 公式サイトの3連単オッズページからテキストをコピーして貼り付けてください。\n\n"
+            "**フォーマット例:**\n"
+            "- `1-2-3  5.0` 形式\n"
+            "- 公式ページのテーブルをそのままコピー")
+    
+    odds_text = st.text_area(
+        "3連単オッズテキスト",
+        height=300,
+        placeholder="公式サイトの3連単オッズページのテキストを貼り付けてください...",
+        key="odds_text_input"
+    )
+    
+    if st.button("🔍 オッズを解析", key="btn_parse_odds"):
+        if odds_text.strip():
+            trifecta_odds = parse_pasted_odds_text(odds_text)
+            if trifecta_odds and len(trifecta_odds) >= 60:
+                st.success(f"✅ {len(trifecta_odds)}通りの3連単オッズを解析しました！")
+                st.session_state['trifecta_odds'] = trifecta_odds
+                st.session_state['odds_source'] = "テキスト貼り付け"
+            else:
+                st.warning(f"⚠️ {len(trifecta_odds)}通りしか解析できませんでした。フォーマットを確認してください。")
+        else:
+            st.warning("テキストを入力してください。")
 
-elif not agents:
-    st.info("☝️ 先にレースデータを入力してシミュレーションを実行してください。")
-elif not trifecta_odds:
-    st.info("☝️ 3連単オッズを貼り付けるか手動入力してください。")
+elif odds_method == "✏️ 手動入力":
+    st.info("💡 主要な買い目のオッズを手動で入力してください（入力しない組み合わせは0として扱います）")
+    
+    manual_text = st.text_area(
+        "買い目とオッズ（1行1組）",
+        height=200,
+        placeholder="1-2-3 5.0\n1-3-2 8.5\n1-2-4 6.0\n...",
+        key="manual_odds_input"
+    )
+    
+    if st.button("📝 手動オッズ確定", key="btn_manual_odds"):
+        if manual_text.strip():
+            import re
+            trifecta_odds = {}
+            for line in manual_text.strip().split('\n'):
+                match = re.match(r'(\d)\s*-\s*(\d)\s*-\s*(\d)\s+([\d,.]+)', line.strip())
+                if match:
+                    key = f"{match.group(1)}-{match.group(2)}-{match.group(3)}"
+                    trifecta_odds[key] = float(match.group(4).replace(',', ''))
+            if trifecta_odds:
+                st.success(f"✅ {len(trifecta_odds)}通りのオッズを登録しました。")
+                st.session_state['trifecta_odds'] = trifecta_odds
+                st.session_state['odds_source'] = "手動入力"
 
+
+# =============================================================
+# 期待値計算実行
+# =============================================================
+if 'trifecta_odds' in st.session_state and st.session_state['trifecta_odds']:
+    st.markdown("---")
+    st.markdown("### 💰 期待値計算")
+    
+    if 'agents' not in st.session_state or not st.session_state.get('agents'):
+        st.warning("⚠️ 先にレースデータを入力してエージェントを作成してください（上部のデータ入力セクション）。")
+    else:
+        agents = st.session_state['agents']
+        trifecta_odds = st.session_state['trifecta_odds']
+        source_info = st.session_state.get('odds_source', '不明')
+        
+        st.info(f"📊 オッズソース: **{source_info}** ({len(trifecta_odds)}通り)")
+        
+        ev_n_sims = st.slider("期待値計算用シミュレーション回数", 
+                               min_value=1000, max_value=50000, value=10000, step=1000,
+                               key="ev_sims_slider")
+        
+        if st.button("💰 期待値を計算する", key="btn_calc_ev", type="primary"):
+            # 気象条件 (session_stateから取得またはデフォルト)
+            conditions = st.session_state.get('conditions', 
+                RaceCondition(temperature=12, wind_speed=3, wave_height=3, weather="曇り"))
+            
+            # Step 1: 合成オッズ計算
+            with st.spinner("📐 合成オッズを計算中..."):
+                synthetic_odds = compute_all_synthetic_odds(trifecta_odds)
+            
+            # Step 2: モンテカルロシミュレーション
+            st.write(f"🎲 モンテカルロシミュレーション ({ev_n_sims}回) 実行中...")
+            sim_probs = run_monte_carlo_for_ev(agents, conditions, ev_n_sims)
+            
+            # Step 3: 期待値計算
+            with st.spinner("💹 期待値を算出中..."):
+                ev_results = compute_expected_values(synthetic_odds, sim_probs)
+            
+            st.success("✅ 計算完了！")
+            
+            # =============================================================
+            # 結果表示
+            # =============================================================
+            ticket_names = {
+                'trifecta': '3連単',
+                'trio': '3連複',
+                'exacta': '2連単',
+                'quinella': '2連複',
+                'wide': '拡連複'
+            }
+            
+            # タブで各券種を表示
+            tabs = st.tabs([f"🎯 {name}" for name in ticket_names.values()])
+            
+            for (ticket_type, tab_name), tab in zip(ticket_names.items(), tabs):
+                with tab:
+                    ev_data = ev_results[ticket_type]
+                    
+                    # DataFrameに変換
+                    rows = []
+                    for key, info in ev_data.items():
+                        if info['odds'] > 0:
+                            rows.append({
+                                '買い目': key,
+                                'オッズ': info['odds'],
+                                '的中確率': f"{info['probability']*100:.2f}%",
+                                '確率(raw)': info['probability'],
+                                '期待値': info['expected_value'],
+                                '判定': '🟢 買い' if info['profitable'] else '🔴'
+                            })
+                    
+                    if rows:
+                        df = pd.DataFrame(rows)
+                        df = df.sort_values('期待値', ascending=False)
+                        
+                        # プラス期待値の数
+                        profitable_count = sum(1 for r in rows if r['判定'] == '🟢 買い')
+                        
+                        col1, col2, col3 = st.columns(3)
+                        with col1:
+                            st.metric("総買い目数", len(rows))
+                        with col2:
+                            st.metric("プラス期待値", f"{profitable_count}件")
+                        with col3:
+                            if rows:
+                                max_ev = max(r['期待値'] for r in rows)
+                                st.metric("最大期待値", f"{max_ev:.2f}")
+                        
+                        # 期待値上位表示
+                        st.markdown(f"#### 📈 {tab_name} 期待値ランキング (上位20)")
+                        display_df = df.head(20)[['買い目', 'オッズ', '的中確率', '期待値', '判定']].reset_index(drop=True)
+                        display_df.index = display_df.index + 1
+                        
+                        # 期待値>1.0を強調
+                        def highlight_ev(row):
+                            if row['期待値'] > 1.0:
+                                return ['background-color: #d4edda'] * len(row)
+                            elif row['期待値'] > 0.8:
+                                return ['background-color: #fff3cd'] * len(row)
+                            return [''] * len(row)
+                        
+                        st.dataframe(
+                            display_df.style.apply(highlight_ev, axis=1),
+                            use_container_width=True
+                        )
+                        
+                        # グラフ: 上位15の期待値棒グラフ
+                        top15 = df.head(15)
+                        fig_ev, ax_ev = plt.subplots(figsize=(10, 5))
+                        colors = ['#27ae60' if ev > 1.0 else '#e74c3c' if ev < 0.5 else '#f39c12' 
+                                  for ev in top15['期待値']]
+                        bars = ax_ev.barh(range(len(top15)), top15['期待値'].values, color=colors)
+                        ax_ev.set_yticks(range(len(top15)))
+                        ax_ev.set_yticklabels(top15['買い目'].values)
+                        ax_ev.axvline(x=1.0, color='red', linestyle='--', linewidth=2, label='損益分岐 (EV=1.0)')
+                        ax_ev.set_xlabel('期待値')
+                        ax_ev.set_title(f'{tab_name} 期待値 Top15')
+                        ax_ev.legend()
+                        ax_ev.invert_yaxis()
+                        plt.tight_layout()
+                        st.pyplot(fig_ev)
+                        plt.close()
+                    else:
+                        st.info("該当するオッズデータがありません。")
+            
+            # =============================================================
+            # おすすめ買い目サマリー
+            # =============================================================
+            st.markdown("---")
+            st.markdown("### 🏆 おすすめ買い目 (期待値 > 1.0)")
+            
+            all_profitable = []
+            for ticket_type, name in ticket_names.items():
+                for key, info in ev_results[ticket_type].items():
+                    if info['profitable'] and info['odds'] > 0:
+                        all_profitable.append({
+                            '券種': name,
+                            '買い目': key,
+                            'オッズ': info['odds'],
+                            '的中確率': f"{info['probability']*100:.2f}%",
+                            '期待値': info['expected_value']
+                        })
+            
+            if all_profitable:
+                prof_df = pd.DataFrame(all_profitable)
+                prof_df = prof_df.sort_values('期待値', ascending=False)
+                st.dataframe(prof_df, use_container_width=True)
+                
+                st.markdown("---")
+                st.markdown("#### 💡 買い目ガイド")
+                
+                # 券種別サマリー
+                for name in ticket_names.values():
+                    subset = [r for r in all_profitable if r['券種'] == name]
+                    if subset:
+                        top3 = sorted(subset, key=lambda x: x['期待値'], reverse=True)[:3]
+                        recs = " / ".join([f"**{r['買い目']}** (EV={r['期待値']:.2f}, オッズ{r['オッズ']})" for r in top3])
+                        st.write(f"**{name}**: {recs}")
+            else:
+                st.info("現在のシミュレーション結果では、期待値 > 1.0 の買い目はありません。\n\n"
+                        "💡 これはオッズとシミュレーション確率のバランスによるものです。"
+                        "期待値 0.8 以上の買い目も検討の価値があります。")
+                
+                # 期待値0.8以上を表示
+                near_profitable = []
+                for ticket_type, name in ticket_names.items():
+                    for key, info in ev_results[ticket_type].items():
+                        if info['expected_value'] > 0.8 and info['odds'] > 0:
+                            near_profitable.append({
+                                '券種': name,
+                                '買い目': key,
+                                'オッズ': info['odds'],
+                                '的中確率': f"{info['probability']*100:.2f}%",
+                                '期待値': info['expected_value']
+                            })
+                
+                if near_profitable:
+                    st.markdown("#### 📊 準おすすめ (期待値 0.8 以上)")
+                    near_df = pd.DataFrame(near_profitable).sort_values('期待値', ascending=False)
+                    st.dataframe(near_df.head(20), use_container_width=True)
+
+            st.markdown("---")
+            st.caption("⚠️ 注意: 期待値はシミュレーション結果に基づく推定値です。実際のレース結果を保証するものではありません。"
+                       "また、オッズはレース締切まで変動します。投票は自己責任でお願いします。")
