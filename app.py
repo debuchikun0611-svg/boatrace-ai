@@ -813,8 +813,6 @@ def run_ev_simulation(agents, conditions, venue_name, month, n_sims=10000):
         counts['wide'][f"{c[0]}={c[1]}"] = 0
 
     sim = RaceSimulator(agents, conditions, venue_name, month)
-    bar = st
-        sim = RaceSimulator(agents, conditions, venue_name, month)
     bar = st.progress(0)
     step = max(1, n_sims // 20)
 
