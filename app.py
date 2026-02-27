@@ -754,10 +754,14 @@ def parse_official_site_text(text: str) -> Tuple[List[BoatAgent], RaceCondition]
     adj_weights = [0.0]*6
     start_exhibitions = [0.0]*6
 
-    section = ""
+        section = ""
     sub_section = ""
+    found_winrate_6m = False
+    found_top2_6m = False
+    found_top3_6m = False
+    found_lane_win_6m = False
 
-    for line in lines:
+    for line_idx, line in enumerate(lines):
         s = line.strip()
         if not s:
             continue
@@ -776,56 +780,72 @@ def parse_official_site_text(text: str) -> Tuple[List[BoatAgent], RaceCondition]
         elif '今節情報' in s:
             section = "thisnode"; sub_section = ""; continue
 
-        # ── サブセクション検出 ──
-        if '平均ST' in s and '総合' not in s and '枠' not in s:
-            sub_section = "avg_st"
-        elif 'ST順位' in s and '総合' not in s:
-            sub_section = "st_rank"
-        elif s.startswith('勝率') and '1着率' not in s and '展示' not in s:
-            sub_section = "winrate"
+        # ── サブセクション検出（より厳密に）──
+        if s == '平均ST' or (s.startswith('平均ST') and '総合' not in s and '枠' not in s):
+            sub_section = "avg_st"; continue
+        elif s.startswith('ST順位') and '総合' not in s:
+            sub_section = "st_rank"; continue
+        elif (s == '勝率' or s.startswith('勝率')) and '1着率' not in s and '展示' not in s and '総合' not in s:
+            sub_section = "winrate"; found_winrate_6m = False; continue
         elif s.startswith('2連対率') and '総合' not in s:
-            sub_section = "top2"
+            sub_section = "top2"; found_top2_6m = False; continue
         elif s.startswith('3連対率') and '総合' not in s:
-            sub_section = "top3"
+            sub_section = "top3"; found_top3_6m = False; continue
         elif '1着率(総合)' in s or '1着率（総合）' in s:
-            sub_section = "lane_win"
+            sub_section = "lane_win"; found_lane_win_6m = False; continue
         elif '2連対率(総合)' in s:
-            sub_section = "lane_top2"
+            sub_section = "lane_top2"; continue
         elif '3連対率(総合)' in s:
-            sub_section = "lane_top3"
+            sub_section = "lane_top3"; continue
         elif '平均ST(総合)' in s:
-            sub_section = "lane_st"
-        elif '能力値' in s:
-            sub_section = "ability"
-        elif '決り手数' in s or '決まり手数' in s:
-            sub_section = "kimarite_count"
-        elif '事故率' in s and '事故点' not in s:
+            sub_section = "lane_st"; continue
+        elif s == '能力値' or s.startswith('能力値'):
+            sub_section = "ability"; continue
+        elif s == '決り手数' or '決まり手数' in s:
+            sub_section = "kimarite_count"; continue
+        elif '事故率' in s and '事故点' not in s and sub_section != "accident":
             sub_section = "accident"
-        elif '貢献P' in s or '貢献' in s:
-            sub_section = "motor_p"
-        elif 'フライング' in s:
-            sub_section = "flying"
+        elif s == 'フライング' or s.startswith('フライング'):
+            sub_section = "flying"; continue
+
+        # ── 貢献P（独立検出）──
+        if '貢献P' in s:
+            vals = extract_values(s)
+            if len(vals) >= 6:
+                for i in range(6):
+                    v = safe_get(vals, i, 0.0, -3.0, 3.0)
+                    motors[i] = v
+            continue
 
         # ── 直近6ヶ月データ取得 ──
         if '直近6ヶ月' in s or '直近6' in s:
             vals = extract_values(s)
+
+            # 値が行内に足りない場合、次の行も結合して再試行
+            if len(vals) < 6 and line_idx + 1 < len(lines):
+                combined = s + " " + lines[line_idx + 1].strip()
+                vals = extract_values(combined)
+
             if len(vals) >= 6:
                 if sub_section == "avg_st":
                     for i in range(6):
-                        v = safe_get(vals, i, 0.18, 0.05, 0.35)
-                        avg_sts[i] = v
-                elif sub_section == "winrate":
+                        avg_sts[i] = safe_get(vals, i, 0.18, 0.05, 0.35)
+                elif sub_section == "winrate" and not found_winrate_6m:
                     for i in range(6):
                         win_rates[i] = safe_get(vals, i, 5.0, 0, 15)
-                elif sub_section == "top2":
+                    found_winrate_6m = True
+                elif sub_section == "top2" and not found_top2_6m:
                     for i in range(6):
                         top2_rates[i] = safe_get(vals, i, 30.0, 0, 100)
-                elif sub_section == "top3":
+                    found_top2_6m = True
+                elif sub_section == "top3" and not found_top3_6m:
                     for i in range(6):
                         top3_rates[i] = safe_get(vals, i, 50.0, 0, 100)
-                elif sub_section == "lane_win":
+                    found_top3_6m = True
+                elif sub_section == "lane_win" and not found_lane_win_6m:
                     for i in range(6):
                         lane_win_rates[i] = safe_get(vals, i, 10.0, 0, 100)
+                    found_lane_win_6m = True
                 elif sub_section == "lane_top2":
                     for i in range(6):
                         lane_top2_rates[i] = safe_get(vals, i, 30.0, 0, 100)
@@ -836,19 +856,40 @@ def parse_official_site_text(text: str) -> Tuple[List[BoatAgent], RaceCondition]
                     for i in range(6):
                         lane_avg_sts[i] = safe_get(vals, i, 0.18, 0.05, 0.35)
 
+        # ── 枠別1着率: パーセント+括弧の特殊フォーマット対応 ──
+        # "38.5%\n(13)\t0.0%\n(14)..." のように値と(回数)が混在
+        if sub_section == "lane_win" and not found_lane_win_6m:
+            if '直近6ヶ月' in s or '直近6' in s:
+                # パーセント値を直接抽出
+                pct_vals = re.findall(r'([\d.]+)\s*%', s)
+                if len(pct_vals) >= 6:
+                    for i in range(6):
+                        try:
+                            lane_win_rates[i] = float(pct_vals[i])
+                        except (ValueError, IndexError):
+                            pass
+                    found_lane_win_6m = True
+                else:
+                    # 次の数行も含めて探す
+                    combined = s
+                    for offset in range(1, 4):
+                        if line_idx + offset < len(lines):
+                            combined += " " + lines[line_idx + offset].strip()
+                    pct_vals = re.findall(r'([\d.]+)\s*%', combined)
+                    if len(pct_vals) >= 6:
+                        for i in range(6):
+                            try:
+                                lane_win_rates[i] = float(pct_vals[i])
+                            except (ValueError, IndexError):
+                                pass
+                        found_lane_win_6m = True
+
         # ── 能力値（今期）──
         if sub_section == "ability" and '今期' in s:
             vals = extract_values(s)
             if len(vals) >= 6:
                 for i in range(6):
                     abilities[i] = int(safe_get(vals, i, 50, 1, 100))
-
-        # ── モーター貢献P ──
-        if sub_section == "motor_p" or '貢献P' in s:
-            vals = extract_values(s)
-            if len(vals) >= 6:
-                for i in range(6):
-                    motors[i] = safe_get(vals, i, 0.0, -3.0, 3.0)
 
         # ── 事故率 ──
         if sub_section == "accident" and '事故率' in s:
@@ -867,68 +908,69 @@ def parse_official_site_text(text: str) -> Tuple[List[BoatAgent], RaceCondition]
 
         # ── 決まり手数 ──
         if sub_section == "kimarite_count":
-            if '逃げ' in s:
+            if s.startswith('逃げ'):
                 vals = extract_values(s)
                 if len(vals) >= 6:
-                    for i in range(6):
-                        nige[i] = int(safe_get(vals, i, 0, 0, 999))
-            elif '差し' in s and '捲' not in s:
+                    for i in range(6): nige[i] = int(safe_get(vals, i, 0, 0, 999))
+            elif s.startswith('差し') and '捲' not in s:
                 vals = extract_values(s)
                 if len(vals) >= 6:
-                    for i in range(6):
-                        sashi[i] = int(safe_get(vals, i, 0, 0, 999))
-            elif '捲差' in s or '捲り差し' in s:
+                    for i in range(6): sashi[i] = int(safe_get(vals, i, 0, 0, 999))
+            elif s.startswith('捲差') or s.startswith('捲り差'):
                 vals = extract_values(s)
                 if len(vals) >= 6:
-                    for i in range(6):
-                        makurisashi[i] = int(safe_get(vals, i, 0, 0, 999))
-            elif '捲り' in s or '捲' in s:
+                    for i in range(6): makurisashi[i] = int(safe_get(vals, i, 0, 0, 999))
+            elif s.startswith('捲り') or s.startswith('捲'):
                 vals = extract_values(s)
                 if len(vals) >= 6:
-                    for i in range(6):
-                        makuri[i] = int(safe_get(vals, i, 0, 0, 999))
+                    for i in range(6): makuri[i] = int(safe_get(vals, i, 0, 0, 999))
 
         # ── 展示タイム ──
-        if section in ["beforeinfo", "exhibition"] or '展示' in s:
-            if s.startswith('展示') and '情報' not in s and '順位' not in s and 'タイム' not in s:
+        if (section in ["beforeinfo","exhibition"]) or '展示' in s:
+            if s.startswith('展示') and '情報' not in s and '順位' not in s and 'タイム' not in s and '1位' not in s:
                 vals = extract_values(s)
                 if len(vals) >= 6:
                     for i in range(6):
                         v = safe_get(vals, i, 0.0, 6.0, 8.0)
-                        if v > 0:
-                            exhibition_times[i] = v
+                        if v > 0: exhibition_times[i] = v
 
         # ── 周回タイム ──
-        if '周回' in s and '展示' not in s and '前走' not in s and '平均' not in s:
+        if s.startswith('周回') and '展示' not in s and '前走' not in s and '平均' not in s:
             vals = extract_values(s)
             if len(vals) >= 6:
                 for i in range(6):
                     v = safe_get(vals, i, 0.0, 30.0, 45.0)
-                    if v > 0:
-                        lap_times[i] = v
+                    if v > 0: lap_times[i] = v
 
         # ── 周り足 ──
-        if '周り足' in s and '前走' not in s and '平均' not in s:
+        if s.startswith('周り足') and '前走' not in s and '平均' not in s:
             vals = extract_values(s)
             if len(vals) >= 6:
                 for i in range(6):
                     v = safe_get(vals, i, 0.0, 10.0, 14.0)
-                    if v > 0:
-                        turn_times[i] = v
+                    if v > 0: turn_times[i] = v
 
         # ── チルト ──
-        if 'チルト' in s:
+        if s.startswith('チルト'):
             vals = extract_values(s)
             if len(vals) >= 6:
                 for i in range(6):
                     tilts[i] = safe_get(vals, i, -0.5, -1.0, 3.5)
 
         # ── 調整重量 ──
-        if '調整重量' in s:
+        if s.startswith('調整重量'):
             vals = extract_values(s)
             if len(vals) >= 6:
                 for i in range(6):
                     adj_weights[i] = safe_get(vals, i, 0.0, 0.0, 5.0)
+
+        # ── 体重（直前情報内）──
+        if section in ["beforeinfo","exhibition"] and s.startswith('体重'):
+            vals = extract_values(s)
+            if len(vals) >= 6:
+                for i in range(6):
+                    v = safe_get(vals, i, 52.0, 40.0, 70.0)
+                    if v > 0: weights[i] = v
 
     # ── 天候 ──
     for line in lines:
