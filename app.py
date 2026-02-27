@@ -1,5 +1,5 @@
 # ============================================================
-#  ボートレース AI シミュレーター v3.3  ─ app.py
+#  ボートレース AI シミュレーター v3.4  ─ app.py
 # ============================================================
 import streamlit as st
 import numpy as np
@@ -249,8 +249,323 @@ class RaceCondition:
     water_temp: float = 20.0
     wave_height: float = 2.0
     tide: str = "満潮"
+
+
 # ─────────────────────────────────────────────
-# 4. シミュレーター
+# 4a. 公式サイト コピペ用パーサー（列方向データ対応）
+# ─────────────────────────────────────────────
+def parse_official_site_text(text: str) -> Tuple[List[BoatAgent], RaceCondition]:
+    """
+    ボートレース公式サイト/情報サイトからコピペされたデータを解析。
+    データは「行ラベル  1号艇値  2号艇値  ...  6号艇値」の列方向。
+    """
+    lines = text.strip().split('\n')
+    conditions = RaceCondition()
+
+    # ── ヘルパー: 行からタブ/複数スペース区切りで6値を取得 ──
+    def extract_6_values(line_text: str):
+        """行テキストから数値6個を抽出（%記号除去対応）"""
+        cleaned = line_text.replace('%', '').replace('℃', '').replace(',', '')
+        parts = re.split(r'\t+|\s{2,}', cleaned.strip())
+        vals = []
+        for p in parts:
+            p = p.strip()
+            if p == '-' or p == '':
+                vals.append(None)
+            else:
+                m = re.match(r'^([+\-]?\d+\.?\d*)$', p)
+                if m:
+                    vals.append(float(m.group(1)))
+        return vals
+
+    def find_row_values(keyword: str, search_lines=None, take_first=True):
+        """キーワードを含む行から6つの数値を探す"""
+        target = search_lines if search_lines else lines
+        found = []
+        for line in target:
+            if keyword in line:
+                vals = extract_6_values(line.split(keyword, 1)[1] if keyword in line else line)
+                if len(vals) >= 6:
+                    found.append(vals[:6])
+        if found:
+            return found[0] if take_first else found
+        return None
+
+    # ── 登録番号 ──
+    numbers = [0] * 6
+    for line in lines:
+        nums_in_line = re.findall(r'\b(\d{4})\b', line)
+        if len(nums_in_line) == 6:
+            try:
+                candidates = [int(n) for n in nums_in_line]
+                if all(1000 <= n <= 5999 for n in candidates):
+                    numbers = candidates
+                    break
+            except ValueError:
+                pass
+
+    # ── 選手名 ──
+    names = [f"選手{i+1}" for i in range(6)]
+    for line in lines:
+        # 漢字名が6人分並んでいる行を探す
+        name_candidates = re.findall(r'[一-龥ぁ-んァ-ヶー]{2,}', line)
+        # 不要なキーワードを除外
+        exclude = {'号艇','基本情報','枠別情報','モータ情報','直前情報',
+                   '今節成績','選手情報','天候状況','決まり手','平均',
+                   '直近','一般戦','コース変更','狙いトク','日本財団',
+                   '会長杯','争奪戦','初日','最終日','ナイター',
+                   '出走表','オッズ','レース','メニュー','お気入り',
+                   '徳山','進入','展示','変更','クリア','コメント',
+                   '情報','検索','一覧','結果','出目','ランク',
+                   '天気','風向','風速','波高','水温','気温',
+                   '部品交換','プロペラ','チルト','調整重量','体重',
+                   '周回','周り足','直線','安定率','抜出率','出遅率',
+                   '通算','今期','前期','未消化','逃げ','差し','捲り',
+                   '捲差','抜き','恵まれ','優勝','優出','準優','フライング'}
+        filtered = [n for n in name_candidates if n not in exclude and len(n) >= 2]
+        if len(filtered) == 6:
+            names = filtered
+            break
+
+    # ── 級別 ──
+    ranks = ["B1"] * 6
+    for line in lines:
+        rank_candidates = re.findall(r'\b([AB][12])\b', line)
+        if len(rank_candidates) == 6:
+            ranks = rank_candidates
+            break
+
+    # ── 年齢 ──
+    ages = [30] * 6
+    for line in lines:
+        if '歳' in line:
+            age_candidates = re.findall(r'(\d{2})歳', line)
+            if len(age_candidates) == 6:
+                ages = [int(a) for a in age_candidates]
+                break
+
+    # ── 数値データ抽出 ──
+    # 平均ST（直近6ヶ月）
+    avg_sts = [0.18] * 6
+    v = find_row_values('直近6ヶ月')
+    if v:
+        for i in range(6):
+            if v[i] is not None and 0.05 <= v[i] <= 0.35:
+                avg_sts[i] = v[i]
+
+    # 勝率（直近6ヶ月）─ 平均STの後に出てくる勝率セクションから
+    win_rates = [5.0] * 6
+    top2_rates = [30.0] * 6
+    top3_rates = [50.0] * 6
+    lane_win_rates = [10.0] * 6
+    abilities = [50] * 6
+    motors = [0.0] * 6
+    accident_rates = [0.0] * 6
+
+    # セクション別に解析
+    section = ""
+    for line in lines:
+        stripped = line.strip()
+
+        # セクション判定
+        if '勝率' == stripped or stripped.startswith('勝率'):
+            if '1着率' not in stripped and '展示' not in stripped:
+                section = "winrate"
+                continue
+        elif '2連対率' == stripped or stripped.startswith('2連対率'):
+            section = "top2"
+            continue
+        elif '3連対率' == stripped or stripped.startswith('3連対率'):
+            section = "top3"
+            continue
+        elif '1着率(総合)' in stripped or '1着率（総合）' in stripped:
+            section = "lane_win"
+            continue
+        elif '能力値' in stripped:
+            section = "ability"
+            continue
+        elif '貢献P' in stripped or '貢献' in stripped:
+            section = "motor"
+        elif '事故率' == stripped or stripped.startswith('事故率'):
+            section = "accident"
+
+        # 直近6ヶ月の行から値を取得
+        if '直近6ヶ月' in stripped or '直近6' in stripped:
+            vals = extract_6_values(stripped)
+            if len(vals) >= 6:
+                if section == "winrate":
+                    for i in range(6):
+                        if vals[i] is not None and 0 < vals[i] < 15:
+                            win_rates[i] = vals[i]
+                elif section == "top2":
+                    for i in range(6):
+                        if vals[i] is not None and 0 <= vals[i] <= 100:
+                            top2_rates[i] = vals[i]
+                elif section == "top3":
+                    for i in range(6):
+                        if vals[i] is not None and 0 <= vals[i] <= 100:
+                            top3_rates[i] = vals[i]
+                elif section == "lane_win":
+                    for i in range(6):
+                        if vals[i] is not None and 0 <= vals[i] <= 100:
+                            lane_win_rates[i] = vals[i]
+
+        # 能力値（今期）
+        if section == "ability" and '今期' in stripped:
+            vals = extract_6_values(stripped)
+            if len(vals) >= 6:
+                for i in range(6):
+                    if vals[i] is not None and 1 <= vals[i] <= 100:
+                        abilities[i] = int(vals[i])
+
+        # モーター貢献P
+        if '貢献P' in stripped or '貢献' in stripped:
+            vals = extract_6_values(stripped)
+            if len(vals) >= 6:
+                for i in range(6):
+                    if vals[i] is not None and -2.0 <= vals[i] <= 2.0:
+                        motors[i] = vals[i]
+
+        # 事故率
+        if section == "accident" and '事故率' in stripped:
+            vals = extract_6_values(stripped)
+            if len(vals) >= 6:
+                for i in range(6):
+                    if vals[i] is not None and 0 <= vals[i] <= 5:
+                        accident_rates[i] = vals[i]
+
+    # ── 天候 ──
+    for line in lines:
+        if '気温' in line and '℃' in line and '風' in line:
+            continue
+        temp_m = re.search(r'(\d+\.?\d*)\s*℃', line)
+        if temp_m and '水温' not in line[:line.find('℃')-5 if '℃' in line else 0]:
+            conditions.temperature = float(temp_m.group(1))
+    for line in lines:
+        wt_m = re.search(r'水温\s*(\d+\.?\d*)', line)
+        if wt_m:
+            conditions.water_temp = float(wt_m.group(1))
+    for line in lines:
+        ws_m = re.search(r'(\d+\.?\d*)\s*m\b', line)
+        if ws_m and '風' in line:
+            conditions.wind_speed = float(ws_m.group(1))
+    for line in lines:
+        wh_m = re.search(r'(\d+\.?\d*)\s*cm', line)
+        if wh_m:
+            conditions.wave_height = float(wh_m.group(1))
+    if '雨' in text:
+        conditions.weather = "雨"
+    elif '曇' in text:
+        conditions.weather = "曇"
+
+    # ── エージェント作成 ──
+    agents = []
+    for i in range(6):
+        agents.append(BoatAgent(
+            lane=i + 1,
+            number=numbers[i],
+            name=names[i],
+            rank=ranks[i],
+            age=ages[i],
+            avg_st=avg_sts[i],
+            win_rate=win_rates[i],
+            top2_rate=top2_rates[i],
+            top3_rate=top3_rates[i],
+            lane_win_rate=lane_win_rates[i],
+            ability=abilities[i],
+            motor_contribution=motors[i],
+            accident_rate=accident_rates[i]
+        ))
+
+    return agents, conditions
+
+
+def parse_manual_format(text: str) -> Tuple[List[BoatAgent], RaceCondition]:
+    """
+    手動フォーマット: "X号艇: 番号 名前 級 平均STx.xx 勝率x.xx ..." の1行形式
+    """
+    agents = []
+    conditions = RaceCondition()
+
+    for line in text.strip().split('\n'):
+        line = line.strip()
+        if not line:
+            continue
+
+        if ('天候' in line or '℃' in line) and '号艇' not in line:
+            t_m = re.search(r'(\d+\.?\d*)\s*℃', line)
+            if t_m: conditions.temperature = float(t_m.group(1))
+            w_m = re.search(r'風速\s*(\d+\.?\d*)', line)
+            if w_m: conditions.wind_speed = float(w_m.group(1))
+            wv_m = re.search(r'波高?\s*(\d+\.?\d*)', line)
+            if wv_m: conditions.wave_height = float(wv_m.group(1))
+            if '雨' in line: conditions.weather = "雨"
+            elif '曇' in line: conditions.weather = "曇"
+            continue
+
+        lane_m = re.search(r'(\d)\s*号艇', line)
+        if not lane_m:
+            continue
+        lane = int(lane_m.group(1))
+
+        num_m = re.search(r'[:：\s]\s*(\d{3,5})\b', line)
+        number = int(num_m.group(1)) if num_m else 0
+
+        name = f"選手{lane}"
+        if num_m:
+            after = line[num_m.end():]
+        else:
+            after = line[lane_m.end():]
+        name_m = re.search(r'\s*([一-龥ぁ-んァ-ヶー]{2,})', after)
+        if name_m: name = name_m.group(1)
+
+        rank = "B1"
+        for r in ["A1","A2","B1","B2"]:
+            if r in line: rank = r; break
+
+        avg_st = 0.18
+        m = re.search(r'(?:平均)?ST\s*(0\.\d+)', line)
+        if m: avg_st = float(m.group(1))
+
+        win_rate = 5.0
+        m = re.search(r'勝率\s*([\d.]+)', line)
+        if m: win_rate = float(m.group(1))
+
+        top2 = 30.0
+        m = re.search(r'2連対?\s*([\d.]+)', line)
+        if m: top2 = float(m.group(1))
+
+        top3 = 50.0
+        m = re.search(r'3連対?\s*([\d.]+)', line)
+        if m: top3 = float(m.group(1))
+
+        lane_wr = 10.0
+        m = re.search(r'枠別[1１]?着?\s*([\d.]+)', line)
+        if m: lane_wr = float(m.group(1))
+
+        ability = 50
+        m = re.search(r'能力\s*(\d+)', line)
+        if m: ability = int(m.group(1))
+
+        motor = 0.0
+        m = re.search(r'モーター?\s*([+\-]?\s*[\d.]+)', line)
+        if m: motor = float(m.group(1).replace(' ', ''))
+
+        agents.append(BoatAgent(
+            lane=lane, number=number, name=name, rank=rank,
+            age=30, avg_st=avg_st, win_rate=win_rate,
+            top2_rate=top2, top3_rate=top3,
+            lane_win_rate=lane_wr, ability=ability,
+            motor_contribution=motor
+        ))
+
+    if not agents:
+        for i in range(1, 7):
+            agents.append(BoatAgent(lane=i, name=f"選手{i}"))
+
+    return agents, conditions
+# ─────────────────────────────────────────────
+# 4b. シミュレーター
 # ─────────────────────────────────────────────
 class RaceSimulator:
     def __init__(self, agents: List[BoatAgent], conditions: RaceCondition,
@@ -392,10 +707,6 @@ class RaceSimulator:
 # 5. オッズ取得 & 合成オッズ
 # ─────────────────────────────────────────────
 def fetch_trifecta_odds(venue_code: str, date_str: str, race_no: int) -> dict:
-    """
-    boatrace.jp の3連単オッズを取得。
-    テーブル構造: 6列（1着=1~6号艇）× 20行（2着-3着の組合せ）= 120セル。
-    """
     url = (f"https://www.boatrace.jp/owpc/pc/race/odds3t"
            f"?rno={race_no}&jcd={venue_code}&hd={date_str}")
     try:
@@ -453,10 +764,8 @@ def fetch_trifecta_odds(venue_code: str, date_str: str, race_no: int) -> dict:
 
 
 def parse_pasted_odds(text: str) -> dict:
-    """貼り付けテキストからオッズを解析"""
     odds_dict = {}
 
-    # パターン1: "1-2-3  6.2" 形式
     pattern1 = re.findall(r'(\d)-(\d)-(\d)\s+([\d,.]+)', text)
     if pattern1:
         for m in pattern1:
@@ -468,7 +777,6 @@ def parse_pasted_odds(text: str) -> dict:
         if len(odds_dict) >= 10:
             return odds_dict
 
-    # パターン2: 数値の羅列（120個以上）
     nums = re.findall(r'[\d]+\.[\d]+', text)
     if len(nums) >= 120:
         boats = [1, 2, 3, 4, 5, 6]
@@ -494,7 +802,6 @@ def parse_pasted_odds(text: str) -> dict:
                         pass
         return odds_dict
 
-    # パターン3: スペース区切り
     all_nums = []
     for line in text.strip().split('\n'):
         found = re.findall(r'[\d]+\.?\d*', line.strip())
@@ -530,12 +837,10 @@ def parse_pasted_odds(text: str) -> dict:
 
 
 def compute_synthetic_odds(trifecta: dict) -> dict:
-    """3連単オッズから他券種の合成オッズを算出"""
     boats = [1, 2, 3, 4, 5, 6]
     result = {"trifecta": trifecta, "trio": {}, "exacta": {},
               "quinella": {}, "wide": {}}
 
-    # 3連複
     for combo in itertools.combinations(boats, 3):
         inv_sum = 0
         key = f"{combo[0]}={combo[1]}={combo[2]}"
@@ -545,7 +850,6 @@ def compute_synthetic_odds(trifecta: dict) -> dict:
                 inv_sum += 1.0 / trifecta[pk]
         result["trio"][key] = round(1.0 / inv_sum, 1) if inv_sum > 0 else 0
 
-    # 2連単
     for p in itertools.permutations(boats, 2):
         inv_sum = 0
         key = f"{p[0]}-{p[1]}"
@@ -556,7 +860,6 @@ def compute_synthetic_odds(trifecta: dict) -> dict:
                     inv_sum += 1.0 / trifecta[pk]
         result["exacta"][key] = round(1.0 / inv_sum, 1) if inv_sum > 0 else 0
 
-    # 2連複
     for combo in itertools.combinations(boats, 2):
         inv_sum = 0
         key = f"{combo[0]}={combo[1]}"
@@ -568,7 +871,6 @@ def compute_synthetic_odds(trifecta: dict) -> dict:
                         inv_sum += 1.0 / trifecta[pk]
         result["quinella"][key] = round(1.0 / inv_sum, 1) if inv_sum > 0 else 0
 
-    # 拡連複
     for combo in itertools.combinations(boats, 2):
         inv_sum = 0
         key = f"{combo[0]}={combo[1]}"
@@ -612,27 +914,22 @@ def run_ev_simulation(agents, conditions, venue_name, month, n_sims=10000):
         fo = result["finish_order"]
         first, second, third = fo[1], fo[2], fo[3]
 
-        # 3連単
         tk = f"{first}-{second}-{third}"
         if tk in counts['trifecta']:
             counts['trifecta'][tk] += 1
 
-        # 3連複
         trio_key = "=".join(str(x) for x in sorted([first, second, third]))
         if trio_key in counts['trio']:
             counts['trio'][trio_key] += 1
 
-        # 2連単
         ek = f"{first}-{second}"
         if ek in counts['exacta']:
             counts['exacta'][ek] += 1
 
-        # 2連複
         qk = "=".join(str(x) for x in sorted([first, second]))
         if qk in counts['quinella']:
             counts['quinella'][qk] += 1
 
-        # 拡連複
         top3 = sorted([first, second, third])
         for combo in itertools.combinations(top3, 2):
             wk = f"{combo[0]}={combo[1]}"
@@ -651,7 +948,6 @@ def run_ev_simulation(agents, conditions, venue_name, month, n_sims=10000):
 
 
 def compute_expected_values(probs: dict, synthetic_odds: dict) -> dict:
-    """EV = 確率 × オッズ"""
     ev = {}
     for bet_type in probs:
         ev[bet_type] = {}
@@ -672,9 +968,9 @@ def compute_expected_values(probs: dict, synthetic_odds: dict) -> dict:
 # =============================================================
 #  7. Streamlit UI
 # =============================================================
-st.set_page_config(page_title="ボートレース AI v3.3", layout="wide")
-st.title("🚤 ボートレース AI シミュレーター v3.3")
-st.caption("会場別特性 × モンテカルロ × オッズ自動取得 × 期待値計算")
+st.set_page_config(page_title="ボートレース AI v3.4", layout="wide")
+st.title("🚤 ボートレース AI シミュレーター v3.4")
+st.caption("公式サイトコピペ対応 × 会場別特性 × モンテカルロ × オッズ自動取得 × 期待値計算")
 
 # ── サイドバー ──
 st.sidebar.header("⚙️ 設定")
@@ -696,10 +992,10 @@ st.sidebar.write(f"風影響度: {venue_profile['wind_effect']}")
 st.sidebar.write(f"メモ: {venue_profile.get('memo','')}")
 
 fig_sb, ax_sb = plt.subplots(figsize=(4, 2.5))
-courses = ["1C", "2C", "3C", "4C", "5C", "6C"]
+courses_label = ["1C", "2C", "3C", "4C", "5C", "6C"]
 rates = venue_profile["course_win_rate"]
 sb_colors = ['#e74c3c', '#000000', '#2ecc71', '#3498db', '#f1c40f', '#9b59b6']
-ax_sb.bar(courses, rates, color=sb_colors)
+ax_sb.bar(courses_label, rates, color=sb_colors)
 ax_sb.set_ylabel("1着率(%)")
 ax_sb.set_title(f"{venue_name} コース別1着率")
 for i, v in enumerate(rates):
@@ -707,7 +1003,6 @@ for i, v in enumerate(rates):
 st.sidebar.pyplot(fig_sb)
 plt.close(fig_sb)
 
-# ── 艇番カラー辞書（グラフ用） ──
 boat_colors = {1:'#e74c3c', 2:'#000000', 3:'#2ecc71',
                4:'#3498db', 5:'#f1c40f', 6:'#9b59b6'}
 
@@ -722,9 +1017,55 @@ tab_input, tab_sim, tab_mc, tab_odds, tab_ev = st.tabs(
 # ----------------------------
 with tab_input:
     st.subheader("選手データ入力")
-    input_method = st.radio("入力方法", ["テキスト貼り付け", "フォーム入力"], horizontal=True)
 
-    if input_method == "テキスト貼り付け":
+    input_method = st.radio(
+        "入力方法を選択",
+        ["📋 公式サイトからコピペ（推奨）", "✏️ 1行形式で入力", "📝 フォーム入力"],
+        horizontal=True
+    )
+
+    # ────────────────────────────────
+    # 方法1: 公式サイトコピペ
+    # ────────────────────────────────
+    if input_method == "📋 公式サイトからコピペ（推奨）":
+        st.markdown("""
+        **使い方**: ボートレース公式サイトや情報サイトの出走表ページを
+        **まるごとコピー（Ctrl+A → Ctrl+C）** して下の欄に貼り付けてください。
+        登録番号・選手名・級別・平均ST・勝率・連対率・枠別成績・能力値・モーター貢献・天候を自動で抽出します。
+        """)
+        official_text = st.text_area(
+            "公式サイトのデータを貼り付け",
+            height=400,
+            placeholder="公式サイトの出走表ページ全体をコピーして貼り付けてください...",
+            key="official_paste"
+        )
+
+        if st.button("🔍 データ解析", type="primary", key="parse_official"):
+            if official_text and len(official_text.strip()) > 50:
+                agents, conditions = parse_official_site_text(official_text)
+                st.session_state['agents'] = agents
+                st.session_state['conditions'] = conditions
+
+                # 解析結果の確認
+                all_default = all(
+                    a.name == f"選手{a.lane}" and a.win_rate == 5.0
+                    for a in agents
+                )
+                if all_default:
+                    st.warning("⚠️ データの自動解析がうまくいきませんでした。"
+                               "「✏️ 1行形式で入力」に切り替えてみてください。")
+                else:
+                    st.success(f"✅ {len(agents)}艇のデータを解析しました！")
+            else:
+                st.warning("データが短すぎます。ページ全体をコピペしてください。")
+
+    # ────────────────────────────────
+    # 方法2: 1行形式
+    # ────────────────────────────────
+    elif input_method == "✏️ 1行形式で入力":
+        st.markdown("""
+        **書式**: `X号艇: 番号 名前 級 平均STx.xx 勝率x.xx 2連対xx.x 3連対xx.x 枠別1着xx.x 能力xx モーター+x.xx`
+        """)
         sample = """1号艇: 4251 川崎誠志 B1 平均ST0.21 勝率4.61 2連対26.6 3連対42.2 枠別1着38.5 能力46 モーター+0.15
 2号艇: 3660 長谷川親王 B1 平均ST0.20 勝率3.18 2連対6.4 3連対20.5 枠別1着0.0 能力43 モーター+0.02
 3号艇: 3554 仲口博崇 A1 平均ST0.18 勝率6.66 2連対54.2 3連対71.6 枠別1着7.7 能力53 モーター-0.32
@@ -732,123 +1073,24 @@ with tab_input:
 5号艇: 4973 栗原直也 A2 平均ST0.17 勝率5.15 2連対30.2 3連対50.9 枠別1着5.9 能力50 モーター-0.39
 6号艇: 3614 谷勝幸 B1 平均ST0.16 勝率4.37 2連対28.9 3連対39.2 枠別1着0.0 能力46 モーター-0.29
 天候: 12℃ 雨 風速1m 波高1cm"""
-        text_data = st.text_area("出走表データを貼り付け", value=sample, height=280)
-    else:
-        text_data = None
+        manual_text = st.text_area("1行形式で入力", value=sample, height=280, key="manual_paste")
 
-    # ─── パーサー（v3.3 修正版）───
-    def parse_input_text(text: str) -> Tuple[List[BoatAgent], RaceCondition]:
-        agents = []
-        conditions = RaceCondition()
+        if st.button("✅ データ確定", type="primary", key="parse_manual"):
+            agents, conditions = parse_manual_format(manual_text)
+            st.session_state['agents'] = agents
+            st.session_state['conditions'] = conditions
 
-        for line in text.strip().split('\n'):
-            line = line.strip()
-            if not line:
-                continue
-
-            # ── 天候行 ──
-            if ('天候' in line or '℃' in line) and '号艇' not in line:
-                t_m = re.search(r'(\d+\.?\d*)\s*℃', line)
-                if t_m:
-                    conditions.temperature = float(t_m.group(1))
-                w_m = re.search(r'風速\s*(\d+\.?\d*)', line)
-                if w_m:
-                    conditions.wind_speed = float(w_m.group(1))
-                wv_m = re.search(r'波高?\s*(\d+\.?\d*)', line)
-                if wv_m:
-                    conditions.wave_height = float(wv_m.group(1))
-                if '雨' in line:
-                    conditions.weather = "雨"
-                elif '曇' in line:
-                    conditions.weather = "曇"
-                continue
-
-            # ── 選手行: "X号艇" を探す ──
-            lane_m = re.search(r'(\d)\s*号艇', line)
-            if not lane_m:
-                continue
-            lane = int(lane_m.group(1))
-
-            # 登録番号（3〜5桁）
-            num_m = re.search(r'[:：\s]\s*(\d{3,5})\b', line)
-            number = int(num_m.group(1)) if num_m else 0
-
-            # 選手名（番号の後の漢字2文字以上）
-            name = f"選手{lane}"
-            if num_m:
-                after_num = line[num_m.end():]
+            all_default = all(a.name == f"選手{a.lane}" for a in agents)
+            if all_default:
+                st.warning("⚠️ 選手名が取得できませんでした。書式を確認してください。")
             else:
-                after_num = line[lane_m.end():]
-            name_m = re.search(r'\s*([一-龥ぁ-んァ-ヶー]{2,})', after_num)
-            if name_m:
-                name = name_m.group(1)
+                st.success(f"✅ {len(agents)}艇のデータを確定しました")
 
-            # 級別
-            rank = "B1"
-            for r in ["A1", "A2", "B1", "B2"]:
-                if r in line:
-                    rank = r
-                    break
-
-            # 平均ST（"平均ST0.21" "ST 0.21" 両対応）
-            avg_st = 0.18
-            st_m = re.search(r'(?:平均)?ST\s*(0\.\d+)', line)
-            if st_m:
-                avg_st = float(st_m.group(1))
-
-            # 勝率
-            win_rate = 5.0
-            wr_m = re.search(r'勝率\s*([\d.]+)', line)
-            if wr_m:
-                win_rate = float(wr_m.group(1))
-
-            # 2連対率
-            top2 = 30.0
-            t2_m = re.search(r'2連対?\s*([\d.]+)', line)
-            if t2_m:
-                top2 = float(t2_m.group(1))
-
-            # 3連対率
-            top3 = 50.0
-            t3_m = re.search(r'3連対?\s*([\d.]+)', line)
-            if t3_m:
-                top3 = float(t3_m.group(1))
-
-            # 枠別1着率
-            lane_wr = 10.0
-            lw_m = re.search(r'枠別[1１]?着?\s*([\d.]+)', line)
-            if lw_m:
-                lane_wr = float(lw_m.group(1))
-
-            # 能力値
-            ability = 50
-            ab_m = re.search(r'能力\s*(\d+)', line)
-            if ab_m:
-                ability = int(ab_m.group(1))
-
-            # モーター貢献（"+0.15" "-0.32" "+ 0.15" 対応）
-            motor = 0.0
-            mo_m = re.search(r'モーター?\s*([+\-]?\s*[\d.]+)', line)
-            if mo_m:
-                motor = float(mo_m.group(1).replace(' ', ''))
-
-            agents.append(BoatAgent(
-                lane=lane, number=number, name=name, rank=rank,
-                age=30, avg_st=avg_st, win_rate=win_rate,
-                top2_rate=top2, top3_rate=top3,
-                lane_win_rate=lane_wr, ability=ability,
-                motor_contribution=motor
-            ))
-
-        if not agents:
-            for i in range(1, 7):
-                agents.append(BoatAgent(lane=i, name=f"選手{i}"))
-
-        return agents, conditions
-
-    # ─── フォーム入力 ───
-    if input_method == "フォーム入力":
-        st.markdown("#### 各艇の情報")
+    # ────────────────────────────────
+    # 方法3: フォーム入力
+    # ────────────────────────────────
+    else:
+        st.markdown("#### 各艇の情報を入力")
         agents_list = []
         cols_header = st.columns([1,1,2,1,1,1,1,1,1,1,1])
         headers = ["艇","番号","名前","級","ST","勝率","2連対","3連対","枠1着","能力","モーター"]
@@ -887,21 +1129,15 @@ with tab_input:
             wind_speed=w_wind, wave_height=w_wave
         )
 
-    # ─── 確定ボタン ───
-    if st.button("✅ データ確定", type="primary"):
-        if input_method == "テキスト貼り付け":
-            agents, conditions = parse_input_text(text_data)
-        else:
-            agents = agents_list
-            conditions = form_conditions
-
-        st.session_state['agents'] = agents
-        st.session_state['conditions'] = conditions
-        st.success(f"✅ {len(agents)}艇のデータを確定しました")
+        if st.button("✅ データ確定", type="primary", key="confirm_form"):
+            st.session_state['agents'] = agents_list
+            st.session_state['conditions'] = form_conditions
+            st.success(f"✅ {len(agents_list)}艇のデータを確定しました")
 
     # ─── 確定済みデータ表示 ───
     if 'agents' in st.session_state:
-        st.markdown("#### 確定済み選手データ")
+        st.markdown("---")
+        st.markdown("#### ✅ 確定済み選手データ")
         agent_df = pd.DataFrame([
             {"艇": a.lane, "番号": a.number, "名前": a.name, "級": a.rank,
              "ST": a.avg_st, "勝率": a.win_rate, "2連対": a.top2_rate,
@@ -911,10 +1147,25 @@ with tab_input:
         ])
         st.dataframe(agent_df, use_container_width=True, hide_index=True)
 
-        st.markdown("#### 天候条件")
         cond = st.session_state['conditions']
-        st.write(f"天候: {cond.weather} / 気温: {cond.temperature}℃ / "
+        st.write(f"🌤 天候: {cond.weather} / 気温: {cond.temperature}℃ / "
                  f"風速: {cond.wind_speed}m / 波高: {cond.wave_height}cm")
+
+        # デバッグ用: 解析できなかった項目の確認
+        with st.expander("🔧 デバッグ: 解析結果の詳細"):
+            for a in st.session_state['agents']:
+                default_flags = []
+                if a.name == f"選手{a.lane}": default_flags.append("名前")
+                if a.number == 0: default_flags.append("番号")
+                if a.win_rate == 5.0: default_flags.append("勝率")
+                if a.avg_st == 0.18: default_flags.append("ST")
+                if a.lane_win_rate == 10.0: default_flags.append("枠1着")
+                if a.ability == 50: default_flags.append("能力")
+                if a.motor_contribution == 0.0: default_flags.append("モーター")
+                if default_flags:
+                    st.write(f"⚠️ {a.lane}号艇 {a.name}: デフォルト値 → {', '.join(default_flags)}")
+                else:
+                    st.write(f"✅ {a.lane}号艇 {a.name}: 全項目取得OK")
 
 
 # ----------------------------
@@ -1074,12 +1325,12 @@ with tab_odds:
                 st.error("解析失敗。形式を確認してください。")
 
     else:
-        manual_text = st.text_area("オッズを入力（1行1組: 1-2-3 6.2）", height=200,
-                                   key="manual_odds",
-                                   placeholder="1-2-3 6.2\n1-3-2 8.5\n...")
+        manual_odds_text = st.text_area("オッズを入力（1行1組: 1-2-3 6.2）", height=200,
+                                        key="manual_odds",
+                                        placeholder="1-2-3 6.2\n1-3-2 8.5\n...")
         if st.button("📥 登録", key="register_odds"):
             odds = {}
-            for line in manual_text.strip().split('\n'):
+            for line in manual_odds_text.strip().split('\n'):
                 m = re.match(r'(\d)-(\d)-(\d)\s+([\d.]+)', line.strip())
                 if m:
                     key = f"{m.group(1)}-{m.group(2)}-{m.group(3)}"
@@ -1088,7 +1339,6 @@ with tab_odds:
                 st.session_state['trifecta_odds'] = odds
                 st.success(f"✅ {len(odds)} 通りを登録しました")
 
-    # --- オッズ表示 ---
     if 'trifecta_odds' in st.session_state:
         odds = st.session_state['trifecta_odds']
         st.markdown("---")
@@ -1178,7 +1428,6 @@ with tab_ev:
                         st.pyplot(fig_ev)
                         plt.close(fig_ev)
 
-            # おすすめ買い目
             st.markdown("---")
             st.markdown("### 🎯 おすすめ買い目サマリー")
 
@@ -1223,7 +1472,7 @@ with tab_ev:
 st.markdown("---")
 st.markdown(
     "<div style='text-align:center; color:gray; font-size:0.8em;'>"
-    "🚤 ボートレース AI シミュレーター v3.3 ─ 会場別特性 × モンテカルロ × オッズ自動取得 × 期待値計算"
+    "🚤 ボートレース AI シミュレーター v3.4 ─ 公式サイトコピペ対応 × 会場別特性 × モンテカルロ × オッズ × 期待値"
     "</div>",
     unsafe_allow_html=True
 )
