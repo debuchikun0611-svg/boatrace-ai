@@ -387,7 +387,7 @@ class RaceSimulator:
         self.venue = venue_profile or DEFAULT_VENUE_PROFILE
         self.season = get_season(month)
 
-       def _compute_race_weights(self):
+　　　　def _compute_race_weights(self):
         """最適化済み重みによるレース勝率計算（5.2万レースから学習）"""
         weights = np.zeros(6)
 
