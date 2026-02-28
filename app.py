@@ -387,11 +387,10 @@ class RaceSimulator:
         self.venue = venue_profile or DEFAULT_VENUE_PROFILE
         self.season = get_season(month)
 
-def _compute_race_weights(self):
+    def _compute_race_weights(self):
         """最適化済み重みによるレース勝率計算（5.2万レースから学習）"""
         weights = np.zeros(6)
 
-        # 実データから算出した会場別コース1着率
         VENUE_COURSE_WIN_RATES = {
             "びわこ": [54.8, 14.6, 11.7, 10.4, 5.9, 2.5],
             "三国": [53.8, 15.1, 14.8, 8.8, 4.4, 3.1],
@@ -418,89 +417,141 @@ def _compute_race_weights(self):
             "鳴門": [48.4, 15.3, 13.9, 12.5, 6.9, 2.9],
         }
 
-        # 会場名からコース勝率を取得
-        venue_name = self.venue.get("memo", "")
         venue_rates = None
         for vname, rates in VENUE_COURSE_WIN_RATES.items():
-            if vname in str(self.venue):
-                venue_rates = rates
-                break
-        if venue_rates is None:
-            # VENUE_PROFILESからキーを探す
-            for vname, rates in VENUE_COURSE_WIN_RATES.items():
-                for pkey in VENUE_PROFILES:
-                    if vname == pkey and VENUE_PROFILES[pkey] == self.venue:
-                        venue_rates = rates
-                        break
-                if venue_rates:
+            for pkey in VENUE_PROFILES:
+                if vname == pkey and VENUE_PROFILES[pkey] is self.venue:
+                    venue_rates = rates
                     break
+            if venue_rates:
+                break
         if venue_rates is None:
             venue_rates = self.venue.get("course_win_rate", [50, 15, 12, 11, 7, 5])
 
-        # 最適化済みパラメータ（5.2万レースから学習）
-        W_VENUE   = 0.069372   # 会場コース特性
-        W_HIST    = 0.024559   # 枠番勝率履歴
-        W_WINRATE = 0.143124   # 全国勝率
-        W_LOCAL   = 0.024559   # 当地勝率
-        W_GRADE   = 0.414521   # 級別（最重要）
-        W_MOTOR   = 0.024559   # モーター2連率
-        W_BOAT    = 0.024559   # ボート2連率
-        W_MACHINE = 0.024559   # 機力合成スコア
-        W_EXHIB   = 0.126226   # 展示タイム
-        W_WEIGHT  = 0.024559   # 体重
-        W_RECENT  = 0.074844   # 直近勝率
-        W_TOP2    = 0.024559   # 2連対率
+        W_VENUE   = 0.069372
+        W_HIST    = 0.024559
+        W_WINRATE = 0.143124
+        W_LOCAL   = 0.024559
+        W_GRADE   = 0.414521
+        W_MOTOR   = 0.024559
+        W_BOAT    = 0.024559
+        W_MACHINE = 0.024559
+        W_EXHIB   = 0.126226
+        W_WEIGHT  = 0.024559
+        W_RECENT  = 0.074844
+        W_TOP2    = 0.024559
 
         grade_map = {"A1": 4, "A2": 3, "B1": 2, "B2": 1}
 
         for i, a in enumerate(self.agents):
             s = 0.0
-
-            # 会場コース特性
             s += venue_rates[i] * W_VENUE
-
-            # 枠番勝率履歴
             s += a.lane_win_rate * W_HIST
-
-            # 全国勝率
             s += a.national_win_rate * W_WINRATE
-
-            # 当地勝率
             s += a.local_win_rate * W_LOCAL
-
-            # 級別（最重要パラメータ）
             s += grade_map.get(a.rank, 2) * W_GRADE
-
-            # モーター2連率
             s += a.motor_top2_rate * W_MOTOR
-
-            # ボート2連率（エージェントにはないのでモーター系で代用）
             machine_score = 0.5 + a.motor_contribution * 0.1
             s += machine_score * 100 * W_BOAT
-
-            # 機力合成スコア
             s += a.get_machine_score() * 100 * W_MACHINE
-
-            # 展示タイム（低いほど良い → 反転）
             s += (7.0 - a.exhibition_time) * 100 * W_EXHIB
-
-            # 体重（軽いほど有利）
             s += (56 - a.weight) * W_WEIGHT
-
-            # 直近勝率（national_win_rateで代用）
             s += a.national_win_rate * 10 * W_RECENT
-
-            # 2連対率
             s += a.national_top2_rate * W_TOP2
-
             weights[i] = max(s, 0.01)
 
-        # softmax で確率化（最適化と同じ方式）
         weights = weights - weights.max()
         exp_weights = np.exp(weights)
         weights = exp_weights / exp_weights.sum()
-
         return weights
+
+    def simulate_race(self):
+        st_times = [a.calculate_start_timing() for a in self.agents]
+        weights = self._compute_race_weights()
+        adjusted = weights.copy()
+
+        best_st = min(st_times)
+        for i in range(6):
+            st_diff = st_times[i] - best_st
+            adjusted[i] *= max(0.5, 1.0 - st_diff * 2.0)
+            ex_bonus = (6.90 - self.agents[i].exhibition_time) * 0.5
+            adjusted[i] *= max(0.7, 1.0 + ex_bonus)
+
+        weather_noise = 0.02
+        if self.conditions.weather in ["雨", "雪"]:
+            weather_noise = 0.05
+        if self.conditions.wave_height >= 5:
+            weather_noise += 0.03
+        if self.conditions.wind_speed >= 5:
+            weather_noise += 0.02
+
+        noise = np.random.normal(0, weather_noise, 6)
+        adjusted = adjusted + noise
+        adjusted = np.maximum(adjusted, 0.01)
+        adjusted = adjusted / adjusted.sum()
+
+        order = []
+        remaining = list(range(6))
+        temp_w = adjusted.copy()
+        for _ in range(6):
+            probs = np.array([temp_w[j] for j in remaining])
+            probs = np.maximum(probs, 0.001)
+            probs = probs / probs.sum()
+            idx = np.random.choice(len(remaining), p=probs)
+            chosen = remaining.pop(idx)
+            order.append(chosen + 1)
+            temp_w[chosen] = 0
+
+        positions = {lane: [] for lane in range(1, 7)}
+        n_points = 8
+        for pt in range(n_points):
+            progress = pt / (n_points - 1)
+            for lane in range(1, 7):
+                final_pos = order.index(lane) + 1
+                start_pos = lane
+                current = start_pos + (final_pos - start_pos) * progress
+                current += np.random.normal(0, 0.3) * (1 - progress)
+                positions[lane].append(current)
+
+        kimarite = self._determine_kimarite(order, st_times)
+
+        return {
+            "finish_order": order,
+            "start_times": st_times,
+            "kimarite": kimarite,
+            "positions": positions,
+            "weights": weights
+        }
+
+    def _determine_kimarite(self, order, st_times):
+        winner = order[0]
+        winner_agent = self.agents[winner - 1]
+        tendency = winner_agent.get_kimarite_tendency()
+        venue_prob = self.venue.get("kimarite_prob", {})
+
+        combined = {}
+        for k in ["逃げ", "差し", "捲り", "捲差", "抜き", "恵まれ"]:
+            combined[k] = tendency.get(k, 0.1) * 0.6 + venue_prob.get(k, 0.1) * 0.4
+
+        if winner == 1:
+            combined["逃げ"] *= 3.0
+            combined["差し"] *= 0.1
+            combined["捲り"] *= 0.1
+        elif winner == 2:
+            combined["差し"] *= 2.5
+            combined["捲り"] *= 1.5
+            combined["逃げ"] *= 0.1
+        elif winner >= 3:
+            combined["捲り"] *= 2.0
+            combined["捲差"] *= 2.0
+            combined["逃げ"] *= 0.1
+
+        total = sum(combined.values())
+        if total > 0:
+            combined = {k: v / total for k, v in combined.items()}
+        keys = list(combined.keys())
+        probs = [combined[k] for k in keys]
+        return np.random.choice(keys, p=probs)
 
 
     def simulate_race(self):
