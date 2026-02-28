@@ -517,435 +517,487 @@ class RaceSimulator:
         probs = [combined[k] for k in keys]
         return np.random.choice(keys, p=probs)
 # ============================================================
-#  ボートレース AI シミュレーター v6.0  ─  app.py
-#  Part 2/4: パーサー（公式サイトコピーテキスト完全対応）
+#  ボートレース AI シミュレーター v6.1  ─  app.py
+#  Part 2/4: パーサー（公式サイトコピー完全対応・修正版）
 # ============================================================
 
 # ── ユーティリティ ──
 def safe_float(s, default=0.0):
-    """文字列を安全にfloatに変換"""
-    if s is None:
-        return default
+    if s is None: return default
     s = str(s).strip().replace(",", "").replace("％", "").replace("%", "")
-    if s in ("", "-", "−", "—", "―"):
-        return default
-    try:
-        return float(s)
-    except ValueError:
-        return default
+    if s in ("", "-", "−", "—", "―"): return default
+    try: return float(s)
+    except ValueError: return default
 
 def safe_int(s, default=0):
-    v = safe_float(s, default)
-    return int(v)
-
-def extract_six_numbers(text_line):
-    """1行から6つの数値を抽出（タブ・スペース区切り対応）"""
-    nums = re.findall(r'-?\d+\.?\d*', text_line)
-    return [safe_float(n) for n in nums[:6]]
-
-def extract_six_pct(text_line):
-    """1行から6つのパーセント付き数値を抽出（%の前の数字を取得）"""
-    # "34.5% 33.0% ..." or "34.5%\n(14) 33.0%\n(16) ..."
-    nums = re.findall(r'(\d+\.?\d*)%', text_line)
-    return [safe_float(n) for n in nums[:6]]
+    return int(safe_float(s, default))
 
 
-# ── 公式サイトテキストパーサー（v6.0 完全書き直し） ──
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+#  公式サイトパーサー v6.1（行単位マッチング方式）
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 def parse_official_site_text(text):
     """
-    公式サイト（boaters等）からコピーされたテキストを解析。
-    構造: 各セクション（基本情報、枠別情報、モータ情報、直前情報）内で
-    ラベル行の次の行に6つの値が並ぶ。
+    公式サイトからのコピーテキストを解析する。
+    
+    方針: テキストを行に分割し、各行から数値を抽出。
+    「ラベル行」の直後（または同一行）に6つの数値がある構造を利用。
+    セクション境界を正確に特定するために、全てのセクション見出しの
+    出現位置を記録し、範囲を限定して検索する。
     """
-    lines = text.split("\n")
-    lines = [l.rstrip() for l in lines]
-
+    raw_lines = text.split("\n")
+    lines = [l.rstrip() for l in raw_lines]
+    N = len(lines)
+    
     agents = [BoatAgent(lane=i+1) for i in range(6)]
     conditions = RaceCondition()
 
-    # ── 名前・登録番号・級の検出 ──
-    # パターン: "4753  5090  4226  5121  4486  4262" (番号行)
-    # その次: "森照夫  生方靖亜  村田浩司  定松勇樹  野村誠  馬場貴也" (名前行)
-    # その次: "B1  B1  B1  A1  B1  A1" (級行)
+    # ────────────────────────────────────
+    # ヘルパー関数
+    # ────────────────────────────────────
+    def nums_in(s):
+        """文字列から全ての数値（負の小数含む）を抽出"""
+        return [safe_float(x) for x in re.findall(r'-?\d+\.?\d*', s)]
 
-    skip_names = {"号艇", "情報", "選手", "コース", "1号艇", "2号艇", "3号艇",
-                  "4号艇", "5号艇", "6号艇", "名前", "登録", "モーター"}
+    def pcts_in(s):
+        """文字列から %の前の数値を抽出"""
+        return [safe_float(x) for x in re.findall(r'(\d+\.?\d*)%', s)]
 
-    def find_row(keyword, start=0, exact_start=False):
-        """キーワードを含む行のインデックスを返す"""
-        for idx in range(start, len(lines)):
-            line = lines[idx].strip()
-            if exact_start:
-                if line.startswith(keyword):
-                    return idx
-            else:
-                if keyword in line:
-                    return idx
-        return -1
+    def find_all(keyword, start=0, end=None):
+        """キーワードを含む全行のインデックスを返す"""
+        end = end or N
+        result = []
+        for i in range(start, min(end, N)):
+            if keyword in lines[i]:
+                result.append(i)
+        return result
 
-    def get_six_after_keyword(keyword, start=0, is_pct=False, exact_start=False):
-        """キーワード行を見つけ、その行（or次の行）から6値を取得"""
-        idx = find_row(keyword, start, exact_start)
-        if idx < 0:
-            return None, -1
-        line = lines[idx]
-        # キーワードを除去して数値を探す
-        after_kw = line.split(keyword, 1)[-1] if keyword in line else line
+    def find_first(keyword, start=0, end=None):
+        """キーワードを含む最初の行のインデックスを返す"""
+        hits = find_all(keyword, start, end)
+        return hits[0] if hits else -1
+
+    def get_six(line_idx, is_pct=False):
+        """指定行（とその次行）から6つの数値を取得"""
+        if line_idx < 0 or line_idx >= N:
+            return None
+        text1 = lines[line_idx]
+        text2 = lines[line_idx + 1] if line_idx + 1 < N else ""
+        
         if is_pct:
-            vals = extract_six_pct(after_kw)
+            vals = pcts_in(text1)
+            if len(vals) >= 6: return vals[:6]
+            vals = pcts_in(text1 + " " + text2)
+            if len(vals) >= 6: return vals[:6]
         else:
-            vals = extract_six_numbers(after_kw)
-        if len(vals) >= 6:
-            return vals[:6], idx
-        # 同じ行に数値がなければ次の行
-        if idx + 1 < len(lines):
-            combined = after_kw + " " + lines[idx + 1]
+            vals = nums_in(text1)
+            if len(vals) >= 6: return vals[:6]
+            vals = nums_in(text1 + " " + text2)
+            if len(vals) >= 6: return vals[:6]
+        return None
+
+    def find_label_then_six(label, start, end, is_pct=False):
+        """
+        start~end の範囲で label を含む行を見つけ、
+        その行（ラベル部分を除去した残り）から6値を取得。
+        同一行に6値なければ次行も合わせて取得。
+        """
+        for i in range(max(0, start), min(end, N)):
+            if label not in lines[i]:
+                continue
+            # ラベル以降の文字列
+            after = lines[i].split(label, 1)[-1]
             if is_pct:
-                vals = extract_six_pct(combined)
+                vals = pcts_in(after)
+                if len(vals) >= 6: return vals[:6]
+                if i + 1 < N:
+                    vals = pcts_in(after + " " + lines[i+1])
+                    if len(vals) >= 6: return vals[:6]
             else:
-                vals = extract_six_numbers(combined)
-            if len(vals) >= 6:
-                return vals[:6], idx
-        return None, idx
+                vals = nums_in(after)
+                if len(vals) >= 6: return vals[:6]
+                if i + 1 < N:
+                    vals = nums_in(after + " " + lines[i+1])
+                    if len(vals) >= 6: return vals[:6]
+        return None
 
-    def get_six_from_section(section_keyword, row_keyword, is_pct=False):
-        """セクション開始後に特定の行ラベルから6値を取得"""
-        sec_idx = find_row(section_keyword)
-        if sec_idx < 0:
-            sec_idx = 0
-        return get_six_after_keyword(row_keyword, start=sec_idx, is_pct=is_pct)
+    # ────────────────────────────────────
+    # セクション境界の特定
+    # ────────────────────────────────────
+    # メニュー項目としての「基本情報」と実データの「基本情報」を区別するため
+    # 「平均ST」の出現位置を基準にする（平均STは基本情報セクション内にのみある）
+    
+    avg_st_positions = find_all("平均ST")
+    # 最初の平均STの位置が基本情報データセクションの開始付近
+    data_start = avg_st_positions[0] - 2 if avg_st_positions else 0
+    
+    # 各セクション見出しをdata_start以降で探す
+    sec_positions = {}
+    for sec_name in ["枠別情報", "モーター情報", "モータ情報", "直前情報"]:
+        idx = find_first(sec_name, data_start)
+        if idx >= 0:
+            sec_positions[sec_name] = idx
+    
+    motor_idx = sec_positions.get("モーター情報", sec_positions.get("モータ情報", -1))
+    waku_idx = sec_positions.get("枠別情報", -1)
+    direct_idx = sec_positions.get("直前情報", -1)
+    
+    # セクション範囲
+    base_start = data_start
+    base_end = min(x for x in [waku_idx, motor_idx, direct_idx, N] if x > 0)
+    waku_start = waku_idx if waku_idx > 0 else base_end
+    waku_end = min(x for x in [motor_idx, direct_idx, N] if x > waku_start) if waku_idx > 0 else base_end
+    motor_start = motor_idx if motor_idx > 0 else waku_end
+    motor_end = direct_idx if direct_idx > motor_start else N
+    direct_start = direct_idx if direct_idx > 0 else N
+    direct_end = N
 
-    # ── 登録番号を検出 ──
-    # "4753 5090 4226 5121 4486 4262" のような行
-    for idx, line in enumerate(lines):
-        nums_in_line = re.findall(r'\b\d{4}\b', line)
-        if len(nums_in_line) >= 6:
-            # 4桁数字が6個以上ある行 → 登録番号候補
-            # ただし年月日(20260227)等を除外
-            potential = [int(n) for n in nums_in_line if 1000 <= int(n) <= 9999]
-            if len(potential) >= 6:
-                for i in range(6):
-                    agents[i].number = potential[i]
+    # ────────────────────────────────────
+    # 1. 登録番号・名前・級
+    # ────────────────────────────────────
+    skip_names = {"号艇", "情報", "選手", "コース", "名前", "登録", "モーター",
+                  "1号艇", "2号艇", "3号艇", "4号艇", "5号艇", "6号艇",
+                  "基本情報", "枠別情報", "直前情報"}
 
-                # 次の行が名前行か確認
-                if idx + 1 < len(lines):
-                    name_line = lines[idx + 1].strip()
-                    # 名前行: 漢字/ひらがな/カタカナが含まれ、数字が少ない
-                    name_candidates = re.split(r'[\t\s　]+', name_line)
-                    name_candidates = [n for n in name_candidates
-                                       if len(n) >= 2 and n not in skip_names
-                                       and not re.match(r'^[\d.%]+$', n)]
-                    if len(name_candidates) >= 6:
-                        for i in range(6):
-                            agents[i].name = name_candidates[i]
-
-                        # その次が級行か
-                        if idx + 2 < len(lines):
-                            rank_line = lines[idx + 2].strip()
-                            ranks_found = re.findall(r'[AB][12]', rank_line)
-                            if len(ranks_found) >= 6:
-                                for i in range(6):
-                                    agents[i].rank = ranks_found[i]
-                break
-
-    # 名前が取れなかった場合の追加検出
-    if agents[0].name == "選手":
-        # "1号艇" 〜 "6号艇" の直後に名前がある形式
-        for idx, line in enumerate(lines):
-            if "1号艇" in line and "2号艇" in line:
-                # 同じ行に全号艇がある → ヘッダー行
-                # 次に4桁番号行、その次に名前行がくるはず
-                pass
-            # "森照夫" のようなパターン: 漢字2-4文字の名前が6個並ぶ行
-            parts = re.split(r'[\t\s　]+', line.strip())
-            name_parts = [p for p in parts if re.match(r'^[\u4e00-\u9fff\u3040-\u309f\u30a0-\u30ffー]{2,6}$', p)
-                          and p not in skip_names]
-            if len(name_parts) >= 6:
-                for i in range(6):
-                    agents[i].name = name_parts[i]
-                break
-
-    # ── 年齢 ──
-    for idx, line in enumerate(lines):
-        if "年齢" in line:
-            ages = re.findall(r'(\d{2})歳?', line)
-            if len(ages) < 6 and idx + 1 < len(lines):
-                ages = re.findall(r'(\d{2})歳?', line + " " + lines[idx + 1])
-            if len(ages) >= 6:
-                for i in range(6):
-                    agents[i].age = int(ages[i])
+    found_numbers = False
+    for idx in range(N):
+        line = lines[idx]
+        four_digit = re.findall(r'\b(\d{4})\b', line)
+        # 4桁数字が6個（登録番号行）
+        candidates = [int(n) for n in four_digit if 1000 <= int(n) <= 5999]
+        if len(candidates) >= 6 and not found_numbers:
+            for i in range(6):
+                agents[i].number = candidates[i]
+            found_numbers = True
+            
+            # 次の行 = 名前行
+            if idx + 1 < N:
+                name_line = lines[idx + 1].strip()
+                parts = re.split(r'[\t\s　]+', name_line)
+                name_candidates = [
+                    p for p in parts
+                    if len(p) >= 2
+                    and p not in skip_names
+                    and not re.match(r'^[\d.%]+$', p)
+                    and re.search(r'[\u4e00-\u9fff\u3040-\u309f\u30a0-\u30ff]', p)
+                ]
+                if len(name_candidates) >= 6:
+                    for i in range(6):
+                        agents[i].name = name_candidates[i]
+                    
+                    # その次 = 級行
+                    if idx + 2 < N:
+                        rank_line = lines[idx + 2]
+                        ranks = re.findall(r'[AB][12]', rank_line)
+                        if len(ranks) >= 6:
+                            for i in range(6):
+                                agents[i].rank = ranks[i]
             break
 
-    # ── 支部 ──
-    for idx, line in enumerate(lines):
-        if "支部" in line:
-            after = line.split("支部")[-1].strip()
-            parts = re.split(r'[\t\s　]+', after)
-            branches = [p for p in parts if len(p) >= 2 and re.match(r'^[\u4e00-\u9fff]+$', p)]
-            if len(branches) < 6 and idx + 1 < len(lines):
-                parts2 = re.split(r'[\t\s　]+', lines[idx + 1].strip())
-                branches.extend([p for p in parts2 if len(p) >= 2 and re.match(r'^[\u4e00-\u9fff]+$', p)])
-            if len(branches) >= 6:
-                for i in range(6):
-                    agents[i].branch = branches[i]
-            break
-
-    # ── 基本情報セクション ──
-    # 平均ST → 直近6ヶ月の値を使用
-    sec_base = find_row("基本情報")
-    sec_waku = find_row("枠別情報")
-    sec_motor = find_row("モーター情報") if find_row("モーター情報") > 0 else find_row("モータ情報")
-    sec_direct = find_row("直前情報")
-
-    # 範囲制限つき検索
-    def find_in_range(keyword, start, end, is_pct=False, exact_start=False):
-        """startからendの範囲内でキーワードを検索して6値を返す"""
-        for idx in range(max(0, start), min(len(lines), end) if end > 0 else len(lines)):
-            line = lines[idx].strip()
-            if exact_start:
-                if not line.startswith(keyword):
-                    continue
-            else:
-                if keyword not in line:
-                    continue
-            # キーワード行から値抽出
-            after_kw = line.split(keyword, 1)[-1] if keyword in line else line
-            if is_pct:
-                vals = extract_six_pct(after_kw)
-            else:
-                vals = extract_six_numbers(after_kw)
-            if len(vals) >= 6:
-                return vals[:6], idx
-            # 次の行も含めて
-            if idx + 1 < len(lines):
-                combined = after_kw + " " + lines[idx + 1]
-                if is_pct:
-                    vals = extract_six_pct(combined)
-                else:
-                    vals = extract_six_numbers(combined)
-                if len(vals) >= 6:
-                    return vals[:6], idx
-        return None, -1
-
-    base_end = sec_waku if sec_waku > 0 else (sec_motor if sec_motor > 0 else len(lines))
-    waku_end = sec_motor if sec_motor > 0 else (sec_direct if sec_direct > 0 else len(lines))
-    motor_end = sec_direct if sec_direct > 0 else len(lines)
-
-    # 平均ST（基本情報セクション内の「直近6ヶ月」）
-    # "平均ST" の後の最初の "直近6ヶ月" 行
-    st_sec = find_row("平均ST", sec_base if sec_base > 0 else 0)
-    if st_sec >= 0:
-        vals, _ = find_in_range("直近6ヶ月", st_sec, st_sec + 15)
-        if vals:
+    # ────────────────────────────────────
+    # 2. 基本情報セクション (base_start ~ base_end)
+    # ────────────────────────────────────
+    
+    # --- 平均ST ---
+    # 「平均ST」セクション内の「直近6ヶ月」
+    st_header = find_first("平均ST", base_start, base_end)
+    if st_header >= 0:
+        vals = find_label_then_six("直近6ヶ月", st_header, st_header + 12)
+        if vals and all(0.05 <= v <= 0.30 for v in vals):
             for i in range(6):
                 agents[i].avg_st = vals[i]
 
-    # 勝率（基本情報セクション内）
-    wr_sec = find_row("勝率", sec_base if sec_base > 0 else 0)
-    # "勝率" が複数あるので基本情報セクション内の直近6ヶ月を取る
-    if wr_sec >= 0 and wr_sec < base_end:
-        vals, _ = find_in_range("直近6ヶ月", wr_sec, wr_sec + 15)
-        if vals:
+    # --- 勝率 ---
+    # 「勝率」がbase_start~base_end内にあるはず
+    # 「ST順位」と「勝率」の間の「勝率」を探す
+    wr_positions = find_all("勝率", base_start, base_end)
+    # ST順位の後の勝率を探す
+    st_rank_pos = find_first("ST順位", base_start, base_end)
+    wr_header = -1
+    for pos in wr_positions:
+        # 「勝率」が単独行（行頭に「勝率」）かつST順位より後
+        line_stripped = lines[pos].strip()
+        if line_stripped == "勝率" or line_stripped.startswith("勝率\n") or line_stripped.startswith("勝率"):
+            if st_rank_pos < 0 or pos > st_rank_pos:
+                wr_header = pos
+                break
+    
+    if wr_header >= 0:
+        # 勝率セクションの終わり = 次の大見出し（2連対率）
+        wr_end_pos = find_first("2連対率", wr_header + 1, base_end)
+        if wr_end_pos < 0: wr_end_pos = base_end
+        
+        vals = find_label_then_six("直近6ヶ月", wr_header, wr_end_pos)
+        if vals and all(1.0 <= v <= 12.0 for v in vals):
             for i in range(6):
                 agents[i].national_win_rate = vals[i]
-        # 全国勝率
-        vals_z, _ = find_in_range("全国", wr_sec, wr_sec + 20)
-        # 当地勝率
-        vals_local, _ = find_in_range("当地", wr_sec, wr_sec + 20)
-        if vals_local:
+        
+        vals = find_label_then_six("当地", wr_header, wr_end_pos)
+        if vals:
             for i in range(6):
-                agents[i].local_win_rate = vals_local[i]
+                agents[i].local_win_rate = vals[i]
 
-    # 2連対率
-    r2_sec = find_row("2連対率", sec_base if sec_base > 0 else 0)
-    if r2_sec >= 0 and r2_sec < base_end:
-        vals, _ = find_in_range("直近6ヶ月", r2_sec, r2_sec + 15, is_pct=True)
+    # --- 2連対率 ---
+    r2_positions = find_all("2連対率", base_start, base_end)
+    r2_header = -1
+    for pos in r2_positions:
+        stripped = lines[pos].strip()
+        if stripped.startswith("2連対率"):
+            r2_header = pos
+            break
+    
+    if r2_header >= 0:
+        r2_end_pos = find_first("3連対率", r2_header + 1, base_end)
+        if r2_end_pos < 0: r2_end_pos = base_end
+        
+        vals = find_label_then_six("直近6ヶ月", r2_header, r2_end_pos, is_pct=True)
         if vals:
             for i in range(6):
                 agents[i].national_top2_rate = vals[i]
 
-    # 3連対率
-    r3_sec = find_row("3連対率", sec_base if sec_base > 0 else 0)
-    if r3_sec >= 0 and r3_sec < base_end:
-        vals, _ = find_in_range("直近6ヶ月", r3_sec, r3_sec + 15, is_pct=True)
+    # --- 3連対率 ---
+    r3_positions = find_all("3連対率", base_start, base_end)
+    r3_header = -1
+    for pos in r3_positions:
+        stripped = lines[pos].strip()
+        if stripped.startswith("3連対率"):
+            r3_header = pos
+            break
+    
+    if r3_header >= 0:
+        r3_end_pos = find_first("決", r3_header + 1, base_end)  # 決り手数 or 決まり手
+        if r3_end_pos < 0: r3_end_pos = base_end
+        
+        vals = find_label_then_six("直近6ヶ月", r3_header, r3_end_pos, is_pct=True)
         if vals:
             for i in range(6):
                 agents[i].national_top3_rate = vals[i]
 
-    # 決り手数（基本情報内）
-    kima_sec = find_row("決り手数", sec_base if sec_base > 0 else 0)
-    if kima_sec < 0:
-        kima_sec = find_row("決まり手数", sec_base if sec_base > 0 else 0)
-    if kima_sec >= 0 and kima_sec < base_end:
+    # --- 決り手数 / 決まり手数 ---
+    kima_header = find_first("決り手数", base_start, base_end)
+    if kima_header < 0:
+        kima_header = find_first("決まり手数", base_start, base_end)
+    if kima_header >= 0:
+        kima_end = min(kima_header + 20, base_end)
+        
         for kw, attr in [("逃げ", "kimarite_nige"), ("差し", "kimarite_sashi"),
                           ("捲り", "kimarite_makuri"), ("捲差", "kimarite_makuzashi"),
                           ("抜き", "kimarite_nuki"), ("恵まれ", "kimarite_megumre")]:
-            vals, _ = find_in_range(kw, kima_sec, kima_sec + 15)
+            vals = find_label_then_six(kw, kima_header, kima_end)
             if vals:
                 for i in range(6):
                     setattr(agents[i], attr, safe_int(vals[i]))
 
-    # 能力値
-    ability_sec = find_row("能力値")
-    if ability_sec >= 0:
-        vals, _ = find_in_range("今期", ability_sec, ability_sec + 5)
-        if vals:
+    # --- 能力値 ---
+    ability_pos = find_first("能力値", base_start, base_end)
+    if ability_pos >= 0:
+        vals = find_label_then_six("今期", ability_pos, ability_pos + 5)
+        if vals and all(20 <= v <= 100 for v in vals):
             for i in range(6):
                 agents[i].ability = safe_int(vals[i])
 
-    # 事故率
-    acc_sec = find_row("事故率")
-    if acc_sec >= 0:
-        # "事故率" の行自体に数値がある場合
-        vals = extract_six_numbers(lines[acc_sec].split("事故率")[-1])
-        if len(vals) >= 6:
+    # --- 事故率 ---
+    # 「事故率」行から直接数値を取る（「事故率」の後に6つの小数）
+    acc_positions = find_all("事故率", base_start, base_end)
+    for pos in acc_positions:
+        after = lines[pos].split("事故率")[-1]
+        vals = nums_in(after)
+        if len(vals) >= 6 and all(0.0 <= v <= 5.0 for v in vals):
             for i in range(6):
                 agents[i].accident_rate = vals[i]
-        else:
-            # 次の行
-            if acc_sec + 1 < len(lines):
-                vals = extract_six_numbers(lines[acc_sec + 1])
-                if len(vals) >= 6:
-                    for i in range(6):
-                        agents[i].accident_rate = vals[i]
+            break
 
-    # フライング
-    f_sec = find_row("フライング")
-    if f_sec >= 0:
-        vals, _ = find_in_range("未消化", f_sec, f_sec + 10)
+    # --- フライング ---
+    f_header = find_first("フライング", base_start, base_end)
+    if f_header >= 0:
+        vals = find_label_then_six("未消化", f_header, f_header + 8)
         if vals:
             for i in range(6):
                 agents[i].flying_count = safe_int(vals[i])
 
-    # ── 枠別情報セクション ──
-    if sec_waku > 0:
+    # --- 年齢 ---
+    age_pos = find_first("年齢", base_start, base_end)
+    if age_pos >= 0:
+        after = lines[age_pos].split("年齢")[-1]
+        ages = re.findall(r'(\d{2})歳?', after)
+        if len(ages) < 6 and age_pos + 1 < N:
+            ages = re.findall(r'(\d{2})歳?', after + " " + lines[age_pos + 1])
+        if len(ages) >= 6:
+            for i in range(6):
+                agents[i].age = int(ages[i])
+
+    # --- 支部 ---
+    branch_pos = find_first("支部", base_start, base_end)
+    if branch_pos >= 0:
+        after = lines[branch_pos].split("支部")[-1]
+        parts = re.split(r'[\t\s　]+', after.strip())
+        branches = [p for p in parts if len(p) >= 2 and re.match(r'^[\u4e00-\u9fff]+$', p)]
+        if len(branches) >= 6:
+            for i in range(6):
+                agents[i].branch = branches[i]
+
+    # ────────────────────────────────────
+    # 3. 枠別情報セクション (waku_start ~ waku_end)
+    # ────────────────────────────────────
+    if waku_idx > 0:
         # 1着率(総合) → 直近6ヶ月
-        r1_waku = find_row("1着率", sec_waku)
-        if r1_waku >= 0 and r1_waku < waku_end:
-            vals, _ = find_in_range("直近6ヶ月", r1_waku, r1_waku + 10, is_pct=True)
+        r1_waku = find_first("1着率", waku_start, waku_end)
+        if r1_waku >= 0:
+            # 1着率セクション内の直近6ヶ月（%値）
+            r1_sub_end = find_first("2連対率", r1_waku + 1, waku_end)
+            if r1_sub_end < 0: r1_sub_end = waku_end
+            vals = find_label_then_six("直近6ヶ月", r1_waku, r1_sub_end, is_pct=True)
             if vals:
                 for i in range(6):
                     agents[i].lane_win_rate = vals[i]
 
-    # ── モーター情報セクション ──
-    if sec_motor > 0:
+    # ────────────────────────────────────
+    # 4. モーター情報セクション (motor_start ~ motor_end)
+    # ────────────────────────────────────
+    if motor_idx > 0:
         # 貢献P
-        vals, _ = find_in_range("貢献P", sec_motor, motor_end)
-        if vals:
-            for i in range(6):
-                agents[i].motor_contribution = vals[i]
+        cp_pos = find_first("貢献P", motor_start, motor_end)
+        if cp_pos >= 0:
+            after = lines[cp_pos].split("貢献P")[-1]
+            vals = nums_in(after)
+            if len(vals) < 6 and cp_pos + 1 < N:
+                vals = nums_in(after + " " + lines[cp_pos + 1])
+            if len(vals) >= 6:
+                for i in range(6):
+                    agents[i].motor_contribution = vals[i]
+        
+        # モーター2連率はデータにないのでデフォルトのまま
+        
+        # 展示順位（通算の展示順位）
+        ex_rank_pos = find_first("展示順位", motor_start, motor_end)
+        if ex_rank_pos >= 0:
+            after = lines[ex_rank_pos].split("展示順位")[-1]
+            vals = nums_in(after)
+            if len(vals) < 6 and ex_rank_pos + 1 < N:
+                vals = nums_in(after + " " + lines[ex_rank_pos + 1])
+            if len(vals) >= 6:
+                for i in range(6):
+                    agents[i].exhibition_rank = max(1, safe_int(round(vals[i])))
 
-        # 展示順位（通算）
-        vals, _ = find_in_range("展示順位", sec_motor, motor_end)
-        if vals:
-            for i in range(6):
-                agents[i].exhibition_rank = safe_int(vals[i])
-                if agents[i].exhibition_rank == 0:
-                    agents[i].exhibition_rank = 3
-
-    # ── 直前情報セクション ──
-    if sec_direct > 0:
+    # ────────────────────────────────────
+    # 5. 直前情報セクション (direct_start ~ direct_end)
+    # ────────────────────────────────────
+    if direct_idx > 0:
         # 展示タイム
-        for idx in range(sec_direct, len(lines)):
-            line = lines[idx].strip()
-            if line.startswith("展示") and "情報" not in line and "タイム1位" not in line and "順位" not in line:
-                vals = extract_six_numbers(line)
-                if len(vals) >= 6 and all(6.0 <= v <= 7.5 for v in vals):
-                    for i in range(6):
-                        agents[i].exhibition_time = vals[i]
-                    break
+        # 「展示」で始まる行で、6.xx の値が6つある行を探す
+        # ただし「展示情報」「展示タイム1位」「展示順位」は除外
+        exclude_exhibition = ["展示情報", "展示タイム1位", "展示順位", "平均展示", "前走展示"]
+        for i in range(direct_start, direct_end):
+            line = lines[i].strip()
+            if not line.startswith("展示"):
+                continue
+            if any(ex in line for ex in exclude_exhibition):
+                continue
+            after = line.split("展示")[-1]
+            vals = nums_in(after)
+            if len(vals) >= 6 and all(6.0 <= v <= 7.5 for v in vals):
+                for j in range(6):
+                    agents[j].exhibition_time = vals[j]
+                break
 
         # 体重
-        vals, _ = find_in_range("体重", sec_direct, len(lines))
+        vals = find_label_then_six("体重", direct_start, direct_end)
         if vals and all(40 <= v <= 70 for v in vals):
             for i in range(6):
                 agents[i].weight = vals[i]
 
         # チルト
-        vals, _ = find_in_range("チルト", sec_direct, len(lines))
+        vals = find_label_then_six("チルト", direct_start, direct_end)
         if vals:
             for i in range(6):
                 agents[i].tilt = vals[i]
 
         # 周り足
-        vals, _ = find_in_range("周り足", sec_direct, len(lines))
+        vals = find_label_then_six("周り足", direct_start, direct_end)
         if vals and all(4.0 <= v <= 8.0 for v in vals):
             for i in range(6):
                 agents[i].turn_time = vals[i]
 
         # 直線
-        vals, _ = find_in_range("直線", sec_direct, len(lines))
-        if vals and all(6.0 <= v <= 9.0 for v in vals):
-            for i in range(6):
-                agents[i].straight_time = vals[i]
+        # 「直線」が複数あるので、直前情報内の最初の「直線」行で値がある行
+        for i in range(direct_start, direct_end):
+            line = lines[i].strip()
+            if line.startswith("直線"):
+                after = line.split("直線")[-1]
+                vals = nums_in(after)
+                if len(vals) >= 6 and all(6.5 <= v <= 9.0 for v in vals):
+                    for j in range(6):
+                        agents[j].straight_time = vals[j]
+                    break
 
         # 周回
-        vals, _ = find_in_range("周回", sec_direct, len(lines))
-        if vals and all(30.0 <= v <= 45.0 for v in vals):
-            for i in range(6):
-                agents[i].lap_time = vals[i]
-
-    # ── 天候 ──
-    for idx, line in enumerate(lines):
-        # "13.0℃ 雨 3m 風向き 12.0℃ 3cm"
-        if "℃" in line and ("雨" in line or "晴" in line or "曇" in line or "雪" in line or "霧" in line):
-            # 気温
-            temp_m = re.search(r'(\d+\.?\d*)℃', line)
-            if temp_m:
-                conditions.temperature = safe_float(temp_m.group(1))
-            # 天気
-            for w in ["雨", "晴", "曇", "雪", "霧"]:
-                if w in line:
-                    conditions.weather = w
+        for i in range(direct_start, direct_end):
+            line = lines[i].strip()
+            if line.startswith("周回") and "周り足" not in line:
+                after = line.split("周回")[-1]
+                vals = nums_in(after)
+                if len(vals) >= 6 and all(30.0 <= v <= 45.0 for v in vals):
+                    for j in range(6):
+                        agents[j].lap_time = vals[j]
                     break
-            # 風速
-            wind_m = re.search(r'(\d+)m', line)
-            if wind_m:
-                conditions.wind_speed = safe_float(wind_m.group(1))
-            # 水温（2番目の℃）
-            temps = re.findall(r'(\d+\.?\d*)℃', line)
-            if len(temps) >= 2:
-                conditions.water_temperature = safe_float(temps[1])
-            # 波高
-            wave_m = re.search(r'(\d+)cm', line)
-            if wave_m:
-                conditions.wave_height = safe_int(wave_m.group(1))
-            break
 
-    # 天候が取れなかった場合、別の行を探す
-    if conditions.temperature == 20.0:
-        for idx, line in enumerate(lines):
-            if "気温" in line and "天気" in line:
-                # 次の行にデータ
-                if idx + 1 < len(lines):
-                    data_line = lines[idx + 1]
-                    temp_m = re.search(r'(\d+\.?\d*)℃', data_line)
-                    if temp_m:
-                        conditions.temperature = safe_float(temp_m.group(1))
-                    for w in ["雨", "晴", "曇", "雪", "霧"]:
-                        if w in data_line:
-                            conditions.weather = w
-                            break
-                    wind_m = re.search(r'(\d+)m', data_line)
-                    if wind_m:
-                        conditions.wind_speed = safe_float(wind_m.group(1))
-                    temps = re.findall(r'(\d+\.?\d*)℃', data_line)
-                    if len(temps) >= 2:
-                        conditions.water_temperature = safe_float(temps[1])
-                    wave_m = re.search(r'(\d+)cm', data_line)
-                    if wave_m:
-                        conditions.wave_height = safe_int(wave_m.group(1))
+    # ────────────────────────────────────
+    # 6. 天候
+    # ────────────────────────────────────
+    # パターン1: "13.0℃ 雨 3m 風向き 12.0℃ 3cm" 形式の行
+    for i in range(N):
+        line = lines[i]
+        if "℃" in line and "cm" in line:
+            weather_words = ["晴", "曇", "雨", "雪", "霧"]
+            has_weather = any(w in line for w in weather_words)
+            if has_weather:
+                for w in weather_words:
+                    if w in line:
+                        conditions.weather = w
+                        break
+                temps = re.findall(r'(\d+\.?\d*)℃', line)
+                if temps:
+                    conditions.temperature = safe_float(temps[0])
+                if len(temps) >= 2:
+                    conditions.water_temperature = safe_float(temps[1])
+                wind_m = re.search(r'(\d+)m', line)
+                if wind_m:
+                    conditions.wind_speed = safe_float(wind_m.group(1))
+                wave_m = re.search(r'(\d+)cm', line)
+                if wave_m:
+                    conditions.wave_height = safe_int(wave_m.group(1))
                 break
+
+    # パターン2: ヘッダー行（気温 天気 風速...）の次行にデータがある
+    if conditions.temperature == 20.0:
+        header_pos = find_first("気温")
+        if header_pos >= 0 and header_pos + 1 < N:
+            # ヘッダー行に「天気」も含まれているか確認
+            if "天気" in lines[header_pos] or "天候" in lines[header_pos]:
+                data_line = lines[header_pos + 1]
+                temps = re.findall(r'(\d+\.?\d*)℃', data_line)
+                if temps:
+                    conditions.temperature = safe_float(temps[0])
+                if len(temps) >= 2:
+                    conditions.water_temperature = safe_float(temps[1])
+                for w in ["晴", "曇", "雨", "雪", "霧"]:
+                    if w in data_line:
+                        conditions.weather = w
+                        break
+                wind_m = re.search(r'(\d+)m', data_line)
+                if wind_m:
+                    conditions.wind_speed = safe_float(wind_m.group(1))
+                wave_m = re.search(r'(\d+)cm', data_line)
+                if wave_m:
+                    conditions.wave_height = safe_int(wave_m.group(1))
 
     return agents, conditions
 
 
-# ── 1行1艇フォーマット パーサー ──
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+#  1行1艇フォーマット パーサー
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 def parse_manual_format(text):
-    """
-    1号艇: 4753 森照夫 B1 46 52 0.15 4.92 34.5 44.8 4.50 18.0 48 1.13 30.0 6.78 3 6.70 -0.5 0.34 12 8 6 4 2
-    天候: 気温13.0℃ 雨 風速3m 水温12.0℃ 波高3cm
-    """
     agents = []
     conditions = RaceCondition()
 
@@ -954,27 +1006,21 @@ def parse_manual_format(text):
         if not line:
             continue
 
-        # 天候行
         if line.startswith("天候"):
             temp_m = re.search(r'気温(\d+\.?\d*)℃?', line)
-            if temp_m:
-                conditions.temperature = safe_float(temp_m.group(1))
+            if temp_m: conditions.temperature = safe_float(temp_m.group(1))
             for w in ["雨", "晴", "曇", "雪", "霧"]:
                 if w in line:
                     conditions.weather = w
                     break
             wind_m = re.search(r'風速(\d+\.?\d*)m', line)
-            if wind_m:
-                conditions.wind_speed = safe_float(wind_m.group(1))
+            if wind_m: conditions.wind_speed = safe_float(wind_m.group(1))
             wt_m = re.search(r'水温(\d+\.?\d*)℃?', line)
-            if wt_m:
-                conditions.water_temperature = safe_float(wt_m.group(1))
+            if wt_m: conditions.water_temperature = safe_float(wt_m.group(1))
             wave_m = re.search(r'波高(\d+)', line)
-            if wave_m:
-                conditions.wave_height = safe_int(wave_m.group(1))
+            if wave_m: conditions.wave_height = safe_int(wave_m.group(1))
             continue
 
-        # 艇行
         m = re.match(r'(\d)号艇[:：]?\s*(.*)', line)
         if m:
             lane = int(m.group(1))
@@ -983,40 +1029,27 @@ def parse_manual_format(text):
 
             if len(parts) >= 2:
                 number = safe_int(parts[0])
-                name = parts[1] if len(parts) > 1 else f"選手{lane}"
-
-                # デフォルト値のリストにフォールバック
-                def gp(idx, default=0.0):
-                    return safe_float(parts[idx]) if idx < len(parts) else default
-
-                def gi(idx, default=0):
-                    return safe_int(parts[idx]) if idx < len(parts) else default
-
+                name = parts[1]
                 rank = parts[2] if len(parts) > 2 and parts[2] in ["A1","A2","B1","B2"] else "B1"
                 offset = 3 if rank in ["A1","A2","B1","B2"] else 2
 
+                def gp(idx, default=0.0):
+                    return safe_float(parts[idx]) if idx < len(parts) else default
+                def gi(idx, default=0):
+                    return safe_int(parts[idx]) if idx < len(parts) else default
+
                 agents.append(BoatAgent(
                     lane=lane, number=number, name=name, rank=rank,
-                    age=gi(offset, 30),
-                    weight=gp(offset+1, 52.0),
-                    avg_st=gp(offset+2, 0.15),
-                    national_win_rate=gp(offset+3, 5.0),
-                    national_top2_rate=gp(offset+4, 30.0),
-                    national_top3_rate=gp(offset+5, 45.0),
-                    local_win_rate=gp(offset+6, 4.5),
-                    lane_win_rate=gp(offset+7, 10.0),
-                    ability=gi(offset+8, 50),
-                    motor_contribution=gp(offset+9, 0.0),
-                    motor_top2_rate=gp(offset+10, 30.0),
-                    exhibition_time=gp(offset+11, 6.80),
-                    exhibition_rank=gi(offset+12, 3),
-                    turn_time=gp(offset+13, 6.70),
-                    tilt=gp(offset+14, -0.5),
-                    accident_rate=gp(offset+15, 0.0),
-                    kimarite_nige=gi(offset+16, 0),
-                    kimarite_sashi=gi(offset+17, 0),
-                    kimarite_makuri=gi(offset+18, 0),
-                    kimarite_makuzashi=gi(offset+19, 0),
+                    age=gi(offset, 30), weight=gp(offset+1, 52.0),
+                    avg_st=gp(offset+2, 0.15), national_win_rate=gp(offset+3, 5.0),
+                    national_top2_rate=gp(offset+4, 30.0), national_top3_rate=gp(offset+5, 45.0),
+                    local_win_rate=gp(offset+6, 4.5), lane_win_rate=gp(offset+7, 10.0),
+                    ability=gi(offset+8, 50), motor_contribution=gp(offset+9, 0.0),
+                    motor_top2_rate=gp(offset+10, 30.0), exhibition_time=gp(offset+11, 6.80),
+                    exhibition_rank=gi(offset+12, 3), turn_time=gp(offset+13, 6.70),
+                    tilt=gp(offset+14, -0.5), accident_rate=gp(offset+15, 0.0),
+                    kimarite_nige=gi(offset+16, 0), kimarite_sashi=gi(offset+17, 0),
+                    kimarite_makuri=gi(offset+18, 0), kimarite_makuzashi=gi(offset+19, 0),
                     kimarite_nuki=gi(offset+20, 0),
                 ))
 
@@ -1024,23 +1057,21 @@ def parse_manual_format(text):
     return agents, conditions
 
 
-# ── 自動判定パーサー ──
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+#  自動判定パーサー
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 def parse_any_text(text):
-    """テキスト形式を自動判定してパース"""
     if not text or not text.strip():
         return [], RaceCondition()
-
-    # 1行1艇形式の判定: "1号艇:" or "2号艇:" が含まれるか
     if re.search(r'[1-6]号艇[:：]', text):
         return parse_manual_format(text)
-
-    # それ以外は公式サイト形式
     return parse_official_site_text(text)
 
 
-# ── オッズ取得 ──
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+#  オッズ取得
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 def fetch_trifecta_odds(venue_code, date_str, race_no):
-    """公式サイトから3連単オッズを取得（転置対応版）"""
     url = f"https://www.boatrace.jp/owpc/pc/race/odds3t?rno={race_no}&jcd={venue_code}&hd={date_str}"
     try:
         headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
@@ -1050,51 +1081,36 @@ def fetch_trifecta_odds(venue_code, date_str, race_no):
         from bs4 import BeautifulSoup
         soup = BeautifulSoup(resp.text, "html.parser")
 
-        # テーブルを探す
         table = soup.select_one("table.is-w495")
         if not table:
-            tables = soup.find_all("table")
-            for t in tables:
+            for t in soup.find_all("table"):
                 if t.find("td", class_="oddsPoint"):
                     table = t
                     break
 
-        if not table:
-            # すべてのoddsPoint要素を直接取得
-            cells = soup.select("td.oddsPoint")
-            if not cells:
-                cells = soup.select("td.is-boatColor1")  # 別のセレクタ試行
-            if not cells:
-                return {}
-            all_values = []
-            for c in cells:
-                txt = c.get_text(strip=True).replace(",", "")
-                all_values.append(safe_float(txt))
-        else:
-            rows = table.find_all("tr")
-            all_values = []
-            for row in rows:
-                cells = row.find_all("td", class_="oddsPoint")
-                if not cells:
-                    cells = row.select("td.oddsPoint")
-                for c in cells:
+        all_values = []
+        if table:
+            for row in table.find_all("tr"):
+                for c in row.find_all("td", class_="oddsPoint"):
                     txt = c.get_text(strip=True).replace(",", "")
                     all_values.append(safe_float(txt))
+        
+        if len(all_values) < 120:
+            cells = soup.select("td.oddsPoint")
+            all_values = [safe_float(c.get_text(strip=True).replace(",", "")) for c in cells]
 
         if len(all_values) < 120:
-            # フォールバック: ページ全体からオッズっぽい数値を取得
             all_text = soup.get_text()
             nums = re.findall(r'\b\d{1,5}\.\d\b', all_text)
             if len(nums) >= 120:
                 all_values = [safe_float(n) for n in nums[:120]]
-            else:
-                return {}
 
-        # 120個の値を20行×6列 → 転置 → 6行×20列 → フラット化
+        if len(all_values) < 120:
+            return {}
+
         matrix = np.array(all_values[:120]).reshape(20, 6)
-        transposed = matrix.T.flatten()  # 6×20 = 120
+        transposed = matrix.T.flatten()
 
-        # 3連単の全順列（1着が1号艇〜6号艇、各20通り）
         odds_dict = {}
         boats = [1, 2, 3, 4, 5, 6]
         idx = 0
@@ -1105,37 +1121,29 @@ def fetch_trifecta_odds(venue_code, date_str, race_no):
                     if idx < len(transposed):
                         val = transposed[idx]
                         if val > 0:
-                            key = f"{first}-{second}-{third}"
-                            odds_dict[key] = val
+                            odds_dict[f"{first}-{second}-{third}"] = val
                         idx += 1
 
         return odds_dict
-
     except Exception as e:
         st.warning(f"オッズ取得エラー: {e}")
         return {}
 
 
 def parse_pasted_odds(text):
-    """貼り付けオッズテキストを解析"""
     if not text or not text.strip():
         return {}
-
     odds = {}
 
-    # パターン1: "1-2-3 27.7" 形式
     pattern1 = re.findall(r'(\d)[--](\d)[--](\d)\s+([\d,.]+)', text)
     if pattern1:
         for m in pattern1:
-            key = f"{m[0]}-{m[1]}-{m[2]}"
-            odds[key] = safe_float(m[3].replace(",", ""))
+            odds[f"{m[0]}-{m[1]}-{m[2]}"] = safe_float(m[3].replace(",", ""))
         if len(odds) >= 10:
             return odds
 
-    # パターン2: 数値が120個以上ある → テーブルコピー
     all_nums = re.findall(r'\d+\.?\d*', text.replace(",", ""))
     float_nums = [safe_float(n) for n in all_nums]
-    # オッズっぽい値（1.0以上）をフィルタ
     odds_nums = [n for n in float_nums if n >= 1.0]
     if len(odds_nums) >= 120:
         matrix = np.array(odds_nums[:120]).reshape(20, 6)
@@ -1149,113 +1157,72 @@ def parse_pasted_odds(text):
                     if idx < len(transposed):
                         val = transposed[idx]
                         if val > 0:
-                            key = f"{first}-{second}-{third}"
-                            odds[key] = val
+                            odds[f"{first}-{second}-{third}"] = val
                         idx += 1
         return odds
-
-    # パターン3: crawlerで取得したマークダウン形式
-    current_first = None
-    for line in text.split("\n"):
-        line = line.strip()
-        # "1   森　照夫" のようなヘッダー行
-        first_m = re.match(r'^(\d)\s+', line)
-        if first_m and re.search(r'[\u4e00-\u9fff]', line):
-            current_first = int(first_m.group(1))
-            continue
-        if current_first:
-            # "2-3  27.7" or "(2)(3) 27.7" 形式
-            m = re.findall(r'(\d)[--]?(\d)\s+([\d,.]+)', line)
-            for match in m:
-                second, third = int(match[0]), int(match[1])
-                val = safe_float(match[2].replace(",", ""))
-                if val > 0:
-                    key = f"{current_first}-{second}-{third}"
-                    odds[key] = val
 
     return odds
 
 
 def compute_synthetic_odds(trifecta_odds):
-    """3連単オッズから合成オッズ（3連複・2連単・2連複・ワイド）を計算"""
     if not trifecta_odds:
         return {}
 
-    trio_odds = {}    # 3連複
-    exacta_odds = {}  # 2連単
-    quinella_odds = {} # 2連複
-    wide_odds = {}    # ワイド
+    trio_odds = {}
+    exacta_odds = {}
+    quinella_odds = {}
+    wide_odds = {}
 
-    # 3連複: 同じ3艇の全順列の合成
     trio_groups = {}
     for key, val in trifecta_odds.items():
         parts = key.split("-")
         if len(parts) == 3:
             sorted_key = "-".join(sorted(parts))
-            if sorted_key not in trio_groups:
-                trio_groups[sorted_key] = []
-            trio_groups[sorted_key].append(val)
-
+            trio_groups.setdefault(sorted_key, []).append(val)
     for key, vals in trio_groups.items():
         inv_sum = sum(1/v for v in vals if v > 0)
-        if inv_sum > 0:
-            trio_odds[key] = round(1 / inv_sum, 1)
+        if inv_sum > 0: trio_odds[key] = round(1 / inv_sum, 1)
 
-    # 2連単: 1着-2着が同じものの合成
     exacta_groups = {}
     for key, val in trifecta_odds.items():
         parts = key.split("-")
         if len(parts) == 3:
             ex_key = f"{parts[0]}-{parts[1]}"
-            if ex_key not in exacta_groups:
-                exacta_groups[ex_key] = []
-            exacta_groups[ex_key].append(val)
-
+            exacta_groups.setdefault(ex_key, []).append(val)
     for key, vals in exacta_groups.items():
         inv_sum = sum(1/v for v in vals if v > 0)
-        if inv_sum > 0:
-            exacta_odds[key] = round(1 / inv_sum, 1)
+        if inv_sum > 0: exacta_odds[key] = round(1 / inv_sum, 1)
 
-    # 2連複: 上位2艇が同じ（順不同）
     quinella_groups = {}
     for key, val in trifecta_odds.items():
         parts = key.split("-")
         if len(parts) == 3:
             q_key = "-".join(sorted(parts[:2]))
-            if q_key not in quinella_groups:
-                quinella_groups[q_key] = []
-            quinella_groups[q_key].append(val)
-
+            quinella_groups.setdefault(q_key, []).append(val)
     for key, vals in quinella_groups.items():
         inv_sum = sum(1/v for v in vals if v > 0)
-        if inv_sum > 0:
-            quinella_odds[key] = round(1 / inv_sum, 1)
+        if inv_sum > 0: quinella_odds[key] = round(1 / inv_sum, 1)
 
-    # ワイド: 2艇が3着以内（順不同）
     wide_groups = {}
     for key, val in trifecta_odds.items():
         parts = key.split("-")
         if len(parts) == 3:
             for combo in [(parts[0], parts[1]), (parts[0], parts[2]), (parts[1], parts[2])]:
                 w_key = "-".join(sorted(combo))
-                if w_key not in wide_groups:
-                    wide_groups[w_key] = []
-                wide_groups[w_key].append(val)
-
+                wide_groups.setdefault(w_key, []).append(val)
     for key, vals in wide_groups.items():
         inv_sum = sum(1/v for v in vals if v > 0)
-        if inv_sum > 0:
-            wide_odds[key] = round(1 / inv_sum, 1)
+        if inv_sum > 0: wide_odds[key] = round(1 / inv_sum, 1)
 
     return {"trio": trio_odds, "exacta": exacta_odds,
             "quinella": quinella_odds, "wide": wide_odds}
 
 
-# ── モンテカルロ EV計算 ──
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+#  モンテカルロ EV計算
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 def run_ev_simulation(agents, conditions, venue_profile, month, n_sim):
-    """モンテカルロシミュレーションで着順分布を取得"""
     sim = RaceSimulator(agents, conditions, venue_profile, month)
-
     trifecta_counts = {}
     trio_counts = {}
     exacta_counts = {}
@@ -1269,23 +1236,18 @@ def run_ev_simulation(agents, conditions, venue_profile, month, n_sim):
         result = sim.simulate_race()
         order = result["finish_order"]
 
-        # 3連単
         tri_key = f"{order[0]}-{order[1]}-{order[2]}"
         trifecta_counts[tri_key] = trifecta_counts.get(tri_key, 0) + 1
 
-        # 3連複
         trio_key = "-".join(str(x) for x in sorted(order[:3]))
         trio_counts[trio_key] = trio_counts.get(trio_key, 0) + 1
 
-        # 2連単
         ex_key = f"{order[0]}-{order[1]}"
         exacta_counts[ex_key] = exacta_counts.get(ex_key, 0) + 1
 
-        # 2連複
         q_key = "-".join(str(x) for x in sorted(order[:2]))
         quinella_counts[q_key] = quinella_counts.get(q_key, 0) + 1
 
-        # ワイド
         top3 = order[:3]
         for ci in range(len(top3)):
             for cj in range(ci+1, len(top3)):
@@ -1293,25 +1255,16 @@ def run_ev_simulation(agents, conditions, venue_profile, month, n_sim):
                 wide_counts[w_key] = wide_counts.get(w_key, 0) + 1
 
     progress.progress(1.0)
-
-    return {
-        "trifecta": trifecta_counts,
-        "trio": trio_counts,
-        "exacta": exacta_counts,
-        "quinella": quinella_counts,
-        "wide": wide_counts
-    }
+    return {"trifecta": trifecta_counts, "trio": trio_counts,
+            "exacta": exacta_counts, "quinella": quinella_counts,
+            "wide": wide_counts}
 
 
 def compute_expected_values(mc_results, all_odds, n_sim):
-    """モンテカルロ結果とオッズからEVを計算"""
     ev_results = {}
-
     for bet_type, counts in mc_results.items():
         odds_dict = all_odds.get(bet_type, {})
-        if not odds_dict:
-            continue
-
+        if not odds_dict: continue
         ev_list = []
         for combo, count in counts.items():
             if combo in odds_dict:
@@ -1320,17 +1273,13 @@ def compute_expected_values(mc_results, all_odds, n_sim):
                 ev = prob * odds_val
                 flag = "◎" if ev >= 1.5 else "○" if ev >= 1.0 else "△" if ev >= 0.8 else "×"
                 ev_list.append({
-                    "combination": combo,
-                    "probability": round(prob, 4),
-                    "odds": odds_val,
-                    "ev": round(ev, 3),
-                    "flag": flag,
-                    "count": count
+                    "combination": combo, "probability": round(prob, 4),
+                    "odds": odds_val, "ev": round(ev, 3),
+                    "flag": flag, "count": count
                 })
-
         ev_results[bet_type] = sorted(ev_list, key=lambda x: -x["ev"])
-
     return ev_results
+
 # ============================================================
 #  ボートレース AI シミュレーター v6.0  ─  app.py
 #  Part 3/4: Streamlit UI（タブ1〜3）
