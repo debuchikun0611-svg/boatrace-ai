@@ -387,47 +387,121 @@ class RaceSimulator:
         self.venue = venue_profile or DEFAULT_VENUE_PROFILE
         self.season = get_season(month)
 
-    def _compute_race_weights(self):
+       def _compute_race_weights(self):
+        """最適化済み重みによるレース勝率計算（5.2万レースから学習）"""
         weights = np.zeros(6)
-        season_rates = self.venue.get("seasons", {}).get(self.season,
-                       self.venue["course_win_rate"])
+
+        # 実データから算出した会場別コース1着率
+        VENUE_COURSE_WIN_RATES = {
+            "びわこ": [54.8, 14.6, 11.7, 10.4, 5.9, 2.5],
+            "三国": [53.8, 15.1, 14.8, 8.8, 4.4, 3.1],
+            "下関": [60.7, 11.3, 11.8, 8.4, 4.2, 3.6],
+            "丸亀": [57.2, 13.3, 12.3, 8.2, 5.9, 3.2],
+            "住之江": [60.6, 14.0, 10.6, 8.9, 4.4, 1.5],
+            "児島": [56.3, 12.9, 11.3, 10.5, 5.4, 3.7],
+            "唐津": [54.9, 14.6, 11.9, 9.9, 6.2, 2.4],
+            "多摩川": [53.7, 15.9, 11.0, 11.2, 5.6, 2.5],
+            "大村": [62.7, 11.9, 10.9, 7.4, 4.7, 2.4],
+            "宮島": [54.9, 12.8, 13.6, 10.2, 5.2, 3.4],
+            "尼崎": [59.8, 11.1, 11.9, 9.8, 4.7, 2.6],
+            "常滑": [59.6, 11.4, 10.6, 9.6, 5.7, 3.1],
+            "平和島": [44.6, 16.7, 14.9, 12.9, 7.1, 3.9],
+            "徳山": [62.9, 13.7, 9.7, 8.1, 3.6, 2.0],
+            "戸田": [45.4, 16.6, 15.0, 13.1, 6.5, 3.4],
+            "桐生": [51.0, 13.5, 12.3, 13.2, 6.7, 3.4],
+            "江戸川": [47.2, 18.2, 13.1, 12.1, 6.9, 2.6],
+            "津": [56.6, 14.1, 11.3, 9.9, 5.2, 2.9],
+            "浜名湖": [51.9, 14.0, 14.6, 9.2, 6.3, 4.0],
+            "芦屋": [58.6, 10.0, 11.1, 11.9, 5.2, 3.2],
+            "若松": [58.2, 11.7, 11.3, 10.4, 5.1, 3.4],
+            "蒲郡": [57.4, 12.3, 11.7, 10.6, 5.1, 2.9],
+            "鳴門": [48.4, 15.3, 13.9, 12.5, 6.9, 2.9],
+        }
+
+        # 会場名からコース勝率を取得
+        venue_name = self.venue.get("memo", "")
+        venue_rates = None
+        for vname, rates in VENUE_COURSE_WIN_RATES.items():
+            if vname in str(self.venue):
+                venue_rates = rates
+                break
+        if venue_rates is None:
+            # VENUE_PROFILESからキーを探す
+            for vname, rates in VENUE_COURSE_WIN_RATES.items():
+                for pkey in VENUE_PROFILES:
+                    if vname == pkey and VENUE_PROFILES[pkey] == self.venue:
+                        venue_rates = rates
+                        break
+                if venue_rates:
+                    break
+        if venue_rates is None:
+            venue_rates = self.venue.get("course_win_rate", [50, 15, 12, 11, 7, 5])
+
+        # 最適化済みパラメータ（5.2万レースから学習）
+        W_VENUE   = 0.069372   # 会場コース特性
+        W_HIST    = 0.024559   # 枠番勝率履歴
+        W_WINRATE = 0.143124   # 全国勝率
+        W_LOCAL   = 0.024559   # 当地勝率
+        W_GRADE   = 0.414521   # 級別（最重要）
+        W_MOTOR   = 0.024559   # モーター2連率
+        W_BOAT    = 0.024559   # ボート2連率
+        W_MACHINE = 0.024559   # 機力合成スコア
+        W_EXHIB   = 0.126226   # 展示タイム
+        W_WEIGHT  = 0.024559   # 体重
+        W_RECENT  = 0.074844   # 直近勝率
+        W_TOP2    = 0.024559   # 2連対率
+
+        grade_map = {"A1": 4, "A2": 3, "B1": 2, "B2": 1}
 
         for i, a in enumerate(self.agents):
-            w = 0.0
-            w += season_rates[i] * 0.20
-            w += a.lane_win_rate * 0.08
-            w += a.national_win_rate * 2.5 * 0.12
-            w += a.local_win_rate * 2.0 * 0.06
-            w += a.get_power_score() * 40 * 0.12
-            w += a.get_machine_score() * 40 * 0.10
-            w += a.get_turn_score() * 40 * 0.08
-            st_score = max(0, (0.20 - a.avg_st) * 200)
-            w += st_score * 0.08
-            weight_score = max(0, (55 - a.weight) * 0.5)
-            w += weight_score * 0.03
-            wind_effect = self.venue.get("wind_effect", "中")
-            if wind_effect == "大" and self.conditions.wind_speed >= 4:
-                if i == 0:
-                    w *= 0.90
-                elif i >= 3:
-                    w *= 1.05
-            if self.conditions.wave_height >= 5:
-                if i == 0:
-                    w *= 0.92
-                elif i >= 3:
-                    w *= 1.03
-            if a.accident_rate > 0.5:
-                w *= 0.92
-            if a.flying_count > 0:
-                w *= 0.95
-            w += a.national_top2_rate * 0.02
-            w += a.national_top3_rate * 0.01
-            weights[i] = max(w, 0.1)
+            s = 0.0
 
-        total = weights.sum()
-        if total > 0:
-            weights = weights / total
+            # 会場コース特性
+            s += venue_rates[i] * W_VENUE
+
+            # 枠番勝率履歴
+            s += a.lane_win_rate * W_HIST
+
+            # 全国勝率
+            s += a.national_win_rate * W_WINRATE
+
+            # 当地勝率
+            s += a.local_win_rate * W_LOCAL
+
+            # 級別（最重要パラメータ）
+            s += grade_map.get(a.rank, 2) * W_GRADE
+
+            # モーター2連率
+            s += a.motor_top2_rate * W_MOTOR
+
+            # ボート2連率（エージェントにはないのでモーター系で代用）
+            machine_score = 0.5 + a.motor_contribution * 0.1
+            s += machine_score * 100 * W_BOAT
+
+            # 機力合成スコア
+            s += a.get_machine_score() * 100 * W_MACHINE
+
+            # 展示タイム（低いほど良い → 反転）
+            s += (7.0 - a.exhibition_time) * 100 * W_EXHIB
+
+            # 体重（軽いほど有利）
+            s += (56 - a.weight) * W_WEIGHT
+
+            # 直近勝率（national_win_rateで代用）
+            s += a.national_win_rate * 10 * W_RECENT
+
+            # 2連対率
+            s += a.national_top2_rate * W_TOP2
+
+            weights[i] = max(s, 0.01)
+
+        # softmax で確率化（最適化と同じ方式）
+        weights = weights - weights.max()
+        exp_weights = np.exp(weights)
+        weights = exp_weights / exp_weights.sum()
+
         return weights
+
 
     def simulate_race(self):
         st_times = [a.calculate_start_timing() for a in self.agents]
