@@ -836,20 +836,42 @@ def parse_official_site_text(text):
             for i in range(6):
                 agents[i].branch = branches[i]
 
-    # ────────────────────────────────────
+       # ────────────────────────────────────
     # 3. 枠別情報セクション (waku_start ~ waku_end)
     # ────────────────────────────────────
     if waku_idx > 0:
         # 1着率(総合) → 直近6ヶ月
+        # 公式サイトのコピーでは % 値と (サンプル数) が改行で分かれる:
+        #   直近6ヶ月	50.0%
+        #   (14)	18.8%
+        #   (16)	15.0%
+        #   (20)	22.2%
+        #   (18)	5.3%
+        #   (19)	4.8%
+        #   (21)
+        # → 複数行を結合して % 前の数値を6個取る必要がある
+
         r1_waku = find_first("1着率", waku_start, waku_end)
         if r1_waku >= 0:
-            # 1着率セクション内の直近6ヶ月（%値）
             r1_sub_end = find_first("2連対率", r1_waku + 1, waku_end)
-            if r1_sub_end < 0: r1_sub_end = waku_end
-            vals = find_label_then_six("直近6ヶ月", r1_waku, r1_sub_end, is_pct=True)
-            if vals:
-                for i in range(6):
-                    agents[i].lane_win_rate = vals[i]
+            if r1_sub_end < 0:
+                r1_sub_end = min(r1_waku + 30, waku_end)
+
+            # 「直近6ヶ月」を含む行を見つける
+            r6m_pos = find_first("直近6ヶ月", r1_waku, r1_sub_end)
+            if r6m_pos >= 0:
+                # その行から最大10行分を結合して % 値を抽出
+                combined = ""
+                for li in range(r6m_pos, min(r6m_pos + 10, r1_sub_end)):
+                    combined += " " + lines[li]
+                    # 「直近3ヶ月」や「直近1ヶ月」が出たら止める
+                    if li > r6m_pos and ("直近3ヶ月" in lines[li] or "直近1ヶ月" in lines[li]):
+                        break
+                vals = pcts_in(combined)
+                if len(vals) >= 6:
+                    for i in range(6):
+                        agents[i].lane_win_rate = vals[i]
+
 
     # ────────────────────────────────────
     # 4. モーター情報セクション (motor_start ~ motor_end)
