@@ -433,7 +433,9 @@ def predict_race(jcd, hd, rno, model, boat_features, feature_names,
     if len(boat_data) != 6:
         return None
 
-    # ペアワイズ特徴量
+        # ペアワイズ特徴量（修正版）
+    # boat_features = ["waku", "grade_num", ...] （29個の生特徴量名）
+    # feature_names = ["i_waku", ..., "j_waku", ..., "waku_diff", ..., "waku_ratio", ...] （116個）
     pair_features_list = []
     pair_ij = []
     for i in range(6):
@@ -441,24 +443,32 @@ def predict_race(jcd, hd, rno, model, boat_features, feature_names,
             if i == j:
                 continue
             pair_feat = {}
-            for bf in boat_features:
-                if bf.startswith("i_"):
-                    pair_feat[bf] = boat_data[i].get(bf[2:], 0)
-                elif bf.startswith("j_"):
-                    pair_feat[bf] = boat_data[j].get(bf[2:], 0)
-                elif bf.endswith("_diff"):
-                    base = bf.replace("_diff", "")
-                    pair_feat[bf] = boat_data[i].get(base, 0) - boat_data[j].get(base, 0)
-                elif bf.endswith("_ratio"):
-                    base = bf.replace("_ratio", "")
+            for fn in feature_names:
+                if fn.startswith("i_"):
+                    base = fn[2:]
+                    pair_feat[fn] = boat_data[i].get(base, 0)
+                elif fn.startswith("j_"):
+                    base = fn[2:]
+                    pair_feat[fn] = boat_data[j].get(base, 0)
+                elif fn.endswith("_diff"):
+                    base = fn.replace("_diff", "")
+                    pair_feat[fn] = boat_data[i].get(base, 0) - boat_data[j].get(base, 0)
+                elif fn.endswith("_ratio"):
+                    base = fn.replace("_ratio", "")
                     jv = boat_data[j].get(base, 1)
                     if jv == 0:
                         jv = 0.001
-                    pair_feat[bf] = boat_data[i].get(base, 0) / jv
+                    pair_feat[fn] = boat_data[i].get(base, 0) / jv
                 else:
-                    pair_feat[bf] = boat_data[i].get(bf, 0)
+                    pair_feat[fn] = boat_data[i].get(fn, 0)
             pair_features_list.append(pair_feat)
             pair_ij.append((i, j))
+
+    X_pred = np.zeros((len(pair_features_list), len(feature_names)))
+    for k, pf in enumerate(pair_features_list):
+        for fi, fn in enumerate(feature_names):
+            X_pred[k, fi] = pf.get(fn, 0)
+
 
     X_pred = np.zeros((len(pair_features_list), len(feature_names)))
     for k, pf in enumerate(pair_features_list):
