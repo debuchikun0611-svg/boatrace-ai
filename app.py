@@ -34,9 +34,6 @@ PLACE_MAP = {
     "21": "芦屋", "22": "福岡", "23": "唐津", "24": "大村"
 }
 
-# jcd → place_stats内部ID のマッピング
-# place_stats_v4.json の "place" dict から逆引き
-JCD_TO_STATS_ID = {}
 
 # ============================================================
 # モデル読み込み
@@ -59,20 +56,13 @@ def load_model():
     except Exception:
         temperature = 5.0
 
-    # place_stats を使いやすい形に変換
-    # 元: {"place": {"8": "大村", ...}, "win_rate": {"8": 62.5, ...}, ...}
-    # → {"大村": {"win_rate": 62.5, ...}, ...}
     place_stats = {}
     if "place" in place_stats_raw and "win_rate" in place_stats_raw:
-        place_id_to_name = place_stats_raw.get("place", {})
+        pid_to_name = place_stats_raw.get("place", {})
         win_rates = place_stats_raw.get("win_rate", {})
-        totals = place_stats_raw.get("total", {})
-        wins = place_stats_raw.get("win", {})
-        for pid, pname in place_id_to_name.items():
+        for pid, pname in pid_to_name.items():
             place_stats[pname] = {
                 "win_rate": win_rates.get(pid, 50.0) / 100.0,
-                "total": totals.get(pid, 1000),
-                "wins": wins.get(pid, 500),
             }
 
     return model, boat_features, feature_names, place_stats, temperature
@@ -220,78 +210,88 @@ def scrape_beforeinfo(jcd, hd, rno):
     if len(tables) < 2:
         return None
 
-    # --- Table[1] パース ---
-    # 構造: 10セル行=選手行(枠,写真,名前,体重,展示T,チルト,プロペラ,部品交換...)
-    #        2セル行=進入行("進入", コース番号)
-    #        3セル行=ST行(調整重量, "ST", ST値)
-    info = {}
-    current_waku = None
-    entry_order = []  # 進入順序を記録
+    # データ取得チェック用
+    checks = {
+        "exhibition_time": [],
+        "entry_course": False,
+        "exhibition_st": [],
+        "wind": False,
+    }
 
+    # --- 展示タイム: Table[1] の is-boatColor 行の Cell[4] ---
+    info = {}
     for row in tables[1].find_all("tr"):
         cells = row.find_all(["td", "th"])
-        num_cells = len(cells)
+        if len(cells) < 8:
+            continue
+        cell0_class = cells[0].get("class", [])
+        if not any("is-boatColor" in c for c in cell0_class):
+            continue
+        waku_text = cells[0].get_text(strip=True)
+        try:
+            waku = int(waku_text)
+        except ValueError:
+            continue
+        if waku < 1 or waku > 6:
+            continue
+        ex_time = safe_float(cells[4].get_text(strip=True), 0)
+        if 6.0 <= ex_time <= 7.5:
+            info[waku] = {"exhibition_time": ex_time}
+            checks["exhibition_time"].append(waku)
+        else:
+            info[waku] = {"exhibition_time": 6.80}
 
-        if num_cells >= 8:
-            # 選手行: Cell[0]=枠, Cell[4]=展示タイム
-            cell0_class = cells[0].get("class", [])
-            if any("is-boatColor" in c for c in cell0_class):
-                waku_text = cells[0].get_text(strip=True)
+    # --- 進入コース & 展示ST: table1_boatImage1 系 ---
+    # table1_boatImage1 div が出現順にコース1〜6
+    # 中の table1_boatImage1Number span = 枠番
+    # 中の table1_boatImage1Time span = 展示ST
+    boat_images = soup.find_all("div", class_="table1_boatImage1")
+    entry_courses = {}  # waku → course_pos
+    exhibition_sts = {}  # waku → st_val
+
+    for course_pos, div in enumerate(boat_images, 1):
+        # 枠番
+        num_span = div.find("span", class_="table1_boatImage1Number")
+        if num_span:
+            try:
+                waku = int(num_span.get_text(strip=True))
+                entry_courses[waku] = course_pos
+            except ValueError:
+                continue
+        # 展示ST
+        time_span = div.find("span", class_="table1_boatImage1Time")
+        if time_span and num_span:
+            st_text = time_span.get_text(strip=True)
+            if st_text:
                 try:
-                    current_waku = int(waku_text)
+                    st_val = float(st_text) if "." in st_text else float(f"0{st_text}")
+                    exhibition_sts[waku] = st_val
+                    checks["exhibition_st"].append(waku)
                 except ValueError:
-                    continue
-                ex_time = safe_float(cells[4].get_text(strip=True), 6.80)
-                info[current_waku] = {"exhibition_time": ex_time}
-
-        elif num_cells == 2:
-            first = cells[0].get_text(strip=True)
-            second = cells[1].get_text(strip=True)
-            if first == "進入" and current_waku is not None:
-                # 進入コース番号
-                try:
-                    course_pos = int(second)
-                    info[current_waku]["entry_course"] = course_pos
-                    entry_order.append((current_waku, course_pos))
-                except (ValueError, KeyError):
                     pass
 
-        elif num_cells == 3:
-            # ST行: Cell[1]="ST", Cell[2]=ST値
-            if cells[1].get_text(strip=True) == "ST" and current_waku is not None:
-                st_text = cells[2].get_text(strip=True)
-                if st_text:
-                    st_val = safe_float(st_text.lstrip("."), 0.15)
-                    if st_val < 1:
-                        pass  # STは展示STとして参考情報のみ
+    if len(entry_courses) == 6:
+        checks["entry_course"] = True
 
-    # --- Table[2]: スタート展示 ---
-    # 各行1セル: "\n\n1\n\nF.04\n\n" → コース1, フライング, ST 0.04
-    exhibition_st = {}
-    if len(tables) >= 3:
-        course_idx = 0
-        for row in tables[2].find_all("tr"):
-            cells = row.find_all(["td", "th"])
-            if len(cells) == 1:
-                text = cells[0].get_text(strip=True).replace("\n", "")
-                match = re.match(r"(\d)(F?)\.(\d+)", text)
-                if match:
-                    course_idx += 1
-                    is_f = match.group(2) == "F"
-                    st_val = float(f"0.{match.group(3)}")
-                    if is_f:
-                        st_val = -st_val
-                    exhibition_st[course_idx] = st_val
-
-    # 風・天候
+    # --- 風・天候: weather1 系要素 ---
     wind_info = {"wind_speed": 3, "wave": 3, "wind_dir_num": 0, "weather_num": 1}
     body_text = soup.get_text()
-    ws_m = re.search(r"(\d+)m", body_text)
-    if ws_m:
-        wind_info["wind_speed"] = int(ws_m.group(1))
-    wv_m = re.search(r"(\d+)cm", body_text)
-    if wv_m:
-        wind_info["wave"] = int(wv_m.group(1))
+
+    # 風速
+    ws_match = re.search(r"(\d+)m", body_text)
+    if ws_match:
+        ws_val = int(ws_match.group(1))
+        if 0 <= ws_val <= 20:
+            wind_info["wind_speed"] = ws_val
+
+    # 波高
+    wv_match = re.search(r"(\d+)cm", body_text)
+    if wv_match:
+        wv_val = int(wv_match.group(1))
+        if 0 <= wv_val <= 30:
+            wind_info["wave"] = wv_val
+
+    # 風向
     wind_dirs = {
         "北北東": 1, "北北西": 15, "北東": 2, "北西": 14, "北": 0,
         "東北東": 3, "東南東": 5, "南南東": 7, "南南西": 9,
@@ -301,22 +301,31 @@ def scrape_beforeinfo(jcd, hd, rno):
     for wd_name, wd_num in sorted(wind_dirs.items(), key=lambda x: -len(x[0])):
         if wd_name in body_text:
             wind_info["wind_dir_num"] = wd_num
+            checks["wind"] = True
             break
+
+    # 天候
     weather_map = {"晴": 1, "曇": 2, "雨": 3, "雪": 4}
     for wn, wv in weather_map.items():
         if wn in body_text:
             wind_info["weather_num"] = wv
             break
 
-    # デフォルト補完
+    # --- 統合 ---
     for waku in range(1, 7):
         if waku not in info:
             info[waku] = {"exhibition_time": 6.80}
-        info[waku].setdefault("entry_course", waku)
-        cpos = info[waku]["entry_course"]
-        info[waku]["exhibition_st"] = exhibition_st.get(cpos, 0.15)
+        if waku in entry_courses:
+            info[waku]["entry_course"] = entry_courses[waku]
+        else:
+            info[waku]["entry_course"] = waku
+        if waku in exhibition_sts:
+            info[waku]["exhibition_st"] = exhibition_sts[waku]
+        else:
+            info[waku]["exhibition_st"] = 0.15
 
     info["_wind"] = wind_info
+    info["_checks"] = checks
     return info
 
 
@@ -350,10 +359,13 @@ def predict_race(jcd, hd, rno, model, boat_features, feature_names,
         }
         beforeinfo["_wind"] = {"wind_speed": 3, "wave": 3,
                                 "wind_dir_num": 0, "weather_num": 1}
+        beforeinfo["_checks"] = {"exhibition_time": [], "entry_course": False,
+                                  "exhibition_st": [], "wind": False}
 
     place_name = PLACE_MAP.get(jcd, "")
     wind = beforeinfo.get("_wind", {"wind_speed": 3, "wave": 3,
                                      "wind_dir_num": 0, "weather_num": 1})
+    checks = beforeinfo.get("_checks", {})
 
     ws = wind.get("wind_speed", 3)
     wd = wind.get("wind_dir_num", 0)
@@ -365,8 +377,35 @@ def predict_race(jcd, hd, rno, model, boat_features, feature_names,
     else:
         wind_effect = 0
 
-    # 場の1号艇勝率（place_statsから取得）
     place_1_winrate = place_stats.get(place_name, {}).get("win_rate", 0.50)
+
+    # データ取得チェック
+    data_checks = []
+    # 出走表
+    names_ok = sum(1 for b in racelist if b.get("name", "").startswith("枠") is False)
+    data_checks.append(("選手名", f"{names_ok}/6",
+                        "OK" if names_ok == 6 else "一部欠損"))
+    rates_ok = sum(1 for b in racelist if b.get("national_win_rate", 4.0) != 4.0)
+    data_checks.append(("全国勝率", f"{rates_ok}/6",
+                        "OK" if rates_ok >= 5 else "一部欠損"))
+    ages_ok = sum(1 for b in racelist if b.get("age", 35) != 35)
+    data_checks.append(("年齢/体重", f"{ages_ok}/6",
+                        "OK" if ages_ok >= 5 else "一部欠損"))
+    # 直前情報
+    et_ok = len(checks.get("exhibition_time", []))
+    data_checks.append(("展示タイム", f"{et_ok}/6",
+                        "OK" if et_ok == 6 else "一部欠損"))
+    ec_ok = checks.get("entry_course", False)
+    data_checks.append(("進入コース", "6/6" if ec_ok else "0/6",
+                        "OK" if ec_ok else "未取得（枠順で代用）"))
+    es_ok = len(checks.get("exhibition_st", []))
+    data_checks.append(("展示ST", f"{es_ok}/6",
+                        "OK" if es_ok >= 4 else "一部欠損"))
+    wd_ok = checks.get("wind", False)
+    data_checks.append(("風/天候", "あり" if wd_ok else "デフォルト",
+                        "OK" if wd_ok else "未取得"))
+    data_checks.append(("場の統計", "あり" if place_name in place_stats else "なし",
+                        "OK" if place_name in place_stats else "デフォルト"))
 
     boat_data = []
     for b in racelist:
@@ -379,8 +418,6 @@ def predict_race(jcd, hd, rno, model, boat_features, feature_names,
         )
         machine_score = (b.get("motor_2rate", 30) + b.get("boat_2rate", 30)) / 2
 
-        # 場×枠の統計（簡易推定）
-        # 1号艇勝率をベースに枠ごとの勝率を推定
         waku_base_rates = {
             1: place_1_winrate,
             2: (1 - place_1_winrate) * 0.22,
@@ -433,9 +470,7 @@ def predict_race(jcd, hd, rno, model, boat_features, feature_names,
     if len(boat_data) != 6:
         return None
 
-        # ペアワイズ特徴量（修正版）
-    # boat_features = ["waku", "grade_num", ...] （29個の生特徴量名）
-    # feature_names = ["i_waku", ..., "j_waku", ..., "waku_diff", ..., "waku_ratio", ...] （116個）
+    # ペアワイズ特徴量（feature_names基準で生成）
     pair_features_list = []
     pair_ij = []
     for i in range(6):
@@ -463,12 +498,6 @@ def predict_race(jcd, hd, rno, model, boat_features, feature_names,
                     pair_feat[fn] = boat_data[i].get(fn, 0)
             pair_features_list.append(pair_feat)
             pair_ij.append((i, j))
-
-    X_pred = np.zeros((len(pair_features_list), len(feature_names)))
-    for k, pf in enumerate(pair_features_list):
-        for fi, fn in enumerate(feature_names):
-            X_pred[k, fi] = pf.get(fn, 0)
-
 
     X_pred = np.zeros((len(pair_features_list), len(feature_names)))
     for k, pf in enumerate(pair_features_list):
@@ -508,7 +537,7 @@ def predict_race(jcd, hd, rno, model, boat_features, feature_names,
         "boat_data": boat_data, "scores": scores, "win_probs": win_probs,
         "ranked": ranked, "combos": combos[:20], "conf_score": conf_score,
         "top1_prob": combos[0]["prob"], "top1_combo": combos[0]["combo"],
-        "wind": wind,
+        "wind": wind, "data_checks": data_checks,
     }
 
 
@@ -601,9 +630,7 @@ if mode == "全場一括予測":
                     if not venue_results:
                         continue
                     with st.expander(f"🏟️ {vname} ({len(venue_results)}R)"):
-                        for res in sorted(
-                            venue_results, key=lambda x: x["rno"]
-                        ):
+                        for res in sorted(venue_results, key=lambda x: x["rno"]):
                             col_left, col_right = st.columns([3, 1])
                             with col_left:
                                 top3_str = "　".join(
@@ -649,6 +676,30 @@ elif mode == "個別レース予測":
         else:
             st.success(f"{result['place']} {result['rno']}R 予測完了")
 
+            # --- データ取得チェック ---
+            dc = result.get("data_checks", [])
+            if dc:
+                with st.expander("📋 データ取得チェック", expanded=False):
+                    check_rows = []
+                    for item_name, count, status in dc:
+                        if status == "OK":
+                            icon = "✅"
+                        elif "欠損" in status or "未取得" in status:
+                            icon = "⚠️"
+                        else:
+                            icon = "ℹ️"
+                        check_rows.append({
+                            "": icon,
+                            "項目": item_name,
+                            "取得数": count,
+                            "状態": status,
+                        })
+                    st.dataframe(
+                        pd.DataFrame(check_rows),
+                        use_container_width=True, hide_index=True,
+                    )
+
+            # --- 天候 ---
             wind = result.get("wind", {})
             if wind:
                 weather_names = {0: "-", 1: "晴", 2: "曇", 3: "雨", 4: "雪"}
@@ -658,6 +709,7 @@ elif mode == "個別レース予測":
                     f"波高: {wind.get('wave', '-')}cm"
                 )
 
+            # --- 選手情報 ---
             st.subheader("🚤 選手情報 & AIスコア")
             boat_rows = []
             for i, bd in enumerate(result["boat_data"]):
@@ -675,17 +727,16 @@ elif mode == "個別レース予測":
                 })
             st.dataframe(
                 pd.DataFrame(boat_rows),
-                use_container_width=True,
-                hide_index=True,
+                use_container_width=True, hide_index=True,
             )
 
+            # --- 3連単予測 ---
             st.subheader("🎯 3連単予測 TOP10")
             combo_rows = []
             for rank, combo in enumerate(result["combos"][:10], 1):
                 expected = (
                     f"{1/combo['prob']:.0f}倍"
-                    if combo["prob"] > 0
-                    else "-"
+                    if combo["prob"] > 0 else "-"
                 )
                 combo_rows.append({
                     "順位": rank,
@@ -695,8 +746,7 @@ elif mode == "個別レース予測":
                 })
             st.dataframe(
                 pd.DataFrame(combo_rows),
-                use_container_width=True,
-                hide_index=True,
+                use_container_width=True, hide_index=True,
             )
 
             st.metric(
