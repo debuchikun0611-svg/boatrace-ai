@@ -10,27 +10,17 @@ from itertools import permutations
 import pandas as pd
 
 # ============================================================
-# 設定
+# 設定（Streamlit Cloud用 - リポジトリ直下のファイルを参照）
 # ============================================================
-MODEL_PATH = "/content/drive/MyDrive/boatrace_model/pairwise_model_v6.txt"
-BOAT_FEATURES_PATH = "/content/drive/MyDrive/boatrace_model/boat_features_v6.json"
-COLUMN_MAPPING_PATH = "/content/drive/MyDrive/boatrace_model/column_mapping_v6.json"
-PLACE_STATS_PATH = "/content/drive/MyDrive/boatrace_model/place_stats_v4.json"
-TEMPERATURE_PATH = "/content/drive/MyDrive/boatrace_model/temperature_v6.json"
+import os
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
-HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+MODEL_PATH = os.path.join(BASE_DIR, "pairwise_model_v6.txt")
+BOAT_FEATURES_PATH = os.path.join(BASE_DIR, "boat_features_v6.json")
+COLUMN_MAPPING_PATH = os.path.join(BASE_DIR, "column_mapping_v6.json")
+PLACE_STATS_PATH = os.path.join(BASE_DIR, "place_stats_v4.json")
+TEMPERATURE_PATH = os.path.join(BASE_DIR, "temperature_v6.json")
 
-# 場コード → 場名
-PLACE_MAP = {
-    "01": "桐生", "02": "戸田", "03": "江戸川", "04": "平和島",
-    "05": "多摩川", "06": "浜名湖", "07": "蒲郡", "08": "常滑",
-    "09": "津", "10": "三国", "11": "びわこ", "12": "住之江",
-    "13": "尼崎", "14": "鳴門", "15": "丸亀", "16": "児島",
-    "17": "宮島", "18": "徳山", "19": "下関", "20": "若松",
-    "21": "芦屋", "22": "福岡", "23": "唐津", "24": "大村"
-}
-
-GRADE_MAP = {"SG": 6, "G1": 5, "G2": 4, "G3": 3, "一般": 2, "ルーキー": 1}
 
 # ============================================================
 # モデルとデータの読み込み（キャッシュ）
