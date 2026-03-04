@@ -118,7 +118,6 @@ def scrape_racelist(jcd, hd, rno):
 
         boat = {"waku": waku}
 
-        # Cell[2]: 選手情報
         racer_text = cells[2].get_text(separator="|", strip=True)
         racer_parts = [p.strip() for p in racer_text.split("|") if p.strip()]
 
@@ -145,7 +144,6 @@ def scrape_racelist(jcd, hd, rno):
             if wt_m:
                 boat["weight"] = float(wt_m.group(1))
 
-        # Cell[3]: F/L/平均ST
         fl_parts = get_br_split(cells[3])
         for p in fl_parts:
             try:
@@ -155,25 +153,21 @@ def scrape_racelist(jcd, hd, rno):
             except Exception:
                 pass
 
-        # Cell[4]: 全国
         nat = get_br_split(cells[4])
         if len(nat) >= 1: boat["national_win_rate"] = safe_float(nat[0])
         if len(nat) >= 2: boat["national_2rate"] = safe_float(nat[1])
         if len(nat) >= 3: boat["national_3rate"] = safe_float(nat[2])
 
-        # Cell[5]: 当地
         loc = get_br_split(cells[5])
         if len(loc) >= 1: boat["local_win_rate"] = safe_float(loc[0])
         if len(loc) >= 2: boat["local_2rate"] = safe_float(loc[1])
         if len(loc) >= 3: boat["local_3rate"] = safe_float(loc[2])
 
-        # Cell[6]: モーター
         mot = get_br_split(cells[6])
         if len(mot) >= 1: boat["motor_no"] = safe_float(mot[0])
         if len(mot) >= 2: boat["motor_2rate"] = safe_float(mot[1])
         if len(mot) >= 3: boat["motor_3rate"] = safe_float(mot[2])
 
-        # Cell[7]: ボート
         bot = get_br_split(cells[7])
         if len(bot) >= 1: boat["boat_no"] = safe_float(bot[0])
         if len(bot) >= 2: boat["boat_2rate"] = safe_float(bot[1])
@@ -241,24 +235,36 @@ def scrape_beforeinfo(jcd, hd, rno):
         else:
             info[waku] = {"exhibition_time": 6.80}
 
+    # ★修正: 進入コース & 展示ST
     boat_images = soup.find_all("div", class_="table1_boatImage1")
     entry_courses = {}
     exhibition_sts = {}
 
     for course_pos, div in enumerate(boat_images, 1):
         num_span = div.find("span", class_="table1_boatImage1Number")
+        waku = None
         if num_span:
             try:
                 waku = int(num_span.get_text(strip=True))
                 entry_courses[waku] = course_pos
             except ValueError:
                 continue
+
         time_span = div.find("span", class_="table1_boatImage1Time")
-        if time_span and num_span:
+        if time_span and waku:
             st_text = time_span.get_text(strip=True)
             if st_text:
+                # ★修正: "F.04" → Fフライング + 0.04秒, ".05" → 0.05秒
+                is_flying = "F" in st_text
+                num_part = st_text.replace("F", "").strip()
                 try:
-                    st_val = float(st_text) if "." in st_text else float(f"0{st_text}")
+                    if num_part.startswith("."):
+                        st_val = float("0" + num_part)
+                    else:
+                        st_val = float(num_part)
+                    # フライングの場合は負の値として保存
+                    if is_flying:
+                        st_val = -st_val
                     exhibition_sts[waku] = st_val
                     checks["exhibition_st"].append(waku)
                 except ValueError:
@@ -267,39 +273,97 @@ def scrape_beforeinfo(jcd, hd, rno):
     if len(entry_courses) == 6:
         checks["entry_course"] = True
 
-    wind_info = {"wind_speed": 3, "wave": 3, "wind_dir_num": 0, "weather_num": 1}
-    body_text = soup.get_text()
+    # ★修正: 風速・波高を「水面気象情報」セクションから正確に取得
+    wind_info = {"wind_speed": 3, "wave": 3, "wind_dir_num": 0, "weather_num": 1,
+                 "weather_name": "不明", "wind_dir_name": "不明"}
 
-    ws_match = re.search(r"(\d+)m", body_text)
-    if ws_match:
-        ws_val = int(ws_match.group(1))
-        if 0 <= ws_val <= 20:
-            wind_info["wind_speed"] = ws_val
+    # 方法1: weather1Body クラスから取得
+    weather_body = soup.find("div", class_="weather1Body")
+    if weather_body:
+        weather_text = weather_body.get_text()
 
-    wv_match = re.search(r"(\d+)cm", body_text)
-    if wv_match:
-        wv_val = int(wv_match.group(1))
-        if 0 <= wv_val <= 30:
-            wind_info["wave"] = wv_val
+        # 風速: "風速Xm" パターン
+        ws_m = re.search(r"風速\s*(\d+)\s*m", weather_text)
+        if ws_m:
+            wind_info["wind_speed"] = int(ws_m.group(1))
+            checks["wind"] = True
 
+        # 波高: "波高Xcm" パターン
+        wv_m = re.search(r"波高\s*(\d+)\s*cm", weather_text)
+        if wv_m:
+            wind_info["wave"] = int(wv_m.group(1))
+
+        # 天候
+        weather_map = {"晴": 1, "曇り": 2, "曇": 2, "雨": 3, "雪": 4, "霧": 5}
+        for wn, wv in weather_map.items():
+            if wn in weather_text:
+                wind_info["weather_num"] = wv
+                wind_info["weather_name"] = wn
+                break
+
+    # 方法2: weather1Body が無い場合、個別要素を探す
+    if not checks["wind"]:
+        # 風速の span/unit を探す
+        all_spans = soup.find_all("span")
+        for span in all_spans:
+            txt = span.get_text(strip=True)
+            m = re.match(r"^(\d+)m$", txt)
+            if m:
+                val = int(m.group(1))
+                if 0 <= val <= 20:
+                    wind_info["wind_speed"] = val
+                    checks["wind"] = True
+                    break
+
+        for span in all_spans:
+            txt = span.get_text(strip=True)
+            m = re.match(r"^(\d+)cm$", txt)
+            if m:
+                val = int(m.group(1))
+                if 0 <= val <= 30:
+                    wind_info["wave"] = val
+                    break
+
+    # 方法3: is-weather クラスから天候取得
+    weather_span = soup.find("span", class_=re.compile(r"is-weather"))
+    if weather_span:
+        w_cls = " ".join(weather_span.get("class", []))
+        if "is-weather1" in w_cls:
+            wind_info["weather_num"] = 1
+            wind_info["weather_name"] = "晴"
+        elif "is-weather2" in w_cls:
+            wind_info["weather_num"] = 2
+            wind_info["weather_name"] = "曇"
+        elif "is-weather3" in w_cls:
+            wind_info["weather_num"] = 3
+            wind_info["weather_name"] = "雨"
+
+    # 風向: is-wind クラス
     wind_dirs = {
         "北北東": 1, "北北西": 15, "北東": 2, "北西": 14, "北": 0,
         "東北東": 3, "東南東": 5, "南南東": 7, "南南西": 9,
         "西南西": 11, "西北西": 13, "南東": 6, "南西": 10,
         "東": 4, "南": 8, "西": 12,
     }
+
+    wind_div = soup.find("div", class_=re.compile(r"is-wind"))
+    if wind_div:
+        w_cls = " ".join(wind_div.get("class", []))
+        m = re.search(r"is-wind(\d+)", w_cls)
+        if m:
+            wind_info["wind_dir_num"] = int(m.group(1))
+
+    # 風向名をテキストからも探す
+    body_text = soup.get_text()
     for wd_name, wd_num in sorted(wind_dirs.items(), key=lambda x: -len(x[0])):
         if wd_name in body_text:
-            wind_info["wind_dir_num"] = wd_num
+            wind_info["wind_dir_name"] = wd_name
+            if wind_info["wind_dir_num"] == 0:
+                wind_info["wind_dir_num"] = wd_num
             checks["wind"] = True
             break
 
-    weather_map = {"晴": 1, "曇": 2, "雨": 3, "雪": 4}
-    for wn, wv in weather_map.items():
-        if wn in body_text:
-            wind_info["weather_num"] = wv
-            break
-
+    # 統合
     for waku in range(1, 7):
         if waku not in info:
             info[waku] = {"exhibition_time": 6.80}
@@ -346,7 +410,8 @@ def predict_race(jcd, hd, rno, model, boat_features, feature_names,
             for w in range(1, 7)
         }
         beforeinfo["_wind"] = {"wind_speed": 3, "wave": 3,
-                                "wind_dir_num": 0, "weather_num": 1}
+                                "wind_dir_num": 0, "weather_num": 1,
+                                "weather_name": "不明", "wind_dir_name": "不明"}
         beforeinfo["_checks"] = {"exhibition_time": [], "entry_course": False,
                                   "exhibition_st": [], "wind": False}
 
@@ -451,12 +516,14 @@ def predict_race(jcd, hd, rno, model, boat_features, feature_names,
         }
         features["_name"] = b.get("name", f"枠{w}")
         features["_grade"] = b.get("grade", "B1")
+        # ★修正: 展示STも保存（UI表示用）
+        features["_exhibition_st"] = bi.get("exhibition_st", 0.15)
         boat_data.append(features)
 
     if len(boat_data) != 6:
         return None
 
-    # ペアワイズ特徴量（feature_names基準で生成）
+    # ペアワイズ特徴量
     pair_features_list = []
     pair_ij = []
     for i in range(6):
@@ -492,7 +559,7 @@ def predict_race(jcd, hd, rno, model, boat_features, feature_names,
 
     preds = model.predict(X_pred)
 
-    # === ペアワイズ勝率行列（シグモイド変換） ===
+    # ペアワイズ勝率行列
     pairwise_raw = np.zeros((6, 6))
     for k, (i, j) in enumerate(pair_ij):
         pairwise_raw[i][j] = preds[k]
@@ -541,6 +608,19 @@ def predict_race(jcd, hd, rno, model, boat_features, feature_names,
         "wind": wind, "data_checks": data_checks,
         "pairwise_prob": pairwise_prob,
     }
+
+
+# ============================================================
+# ★修正: 展示ST表示用フォーマット関数
+# ============================================================
+def format_st(val):
+    """展示STの値を表示用にフォーマット。負の値はフライング(F)"""
+    if val is None or val == 0.15:
+        return "-"
+    if val < 0:
+        return f"F{abs(val):.2f}"
+    else:
+        return f".{val:.2f}"[1:]  # "0.05" → ".05"
 
 
 # ============================================================
@@ -701,17 +781,23 @@ elif mode == "個別レース予測":
                         use_container_width=True, hide_index=True,
                     )
 
-            # --- 天候 ---
+            # ★修正: 天候情報を正確に表示
             wind = result.get("wind", {})
             if wind:
-                weather_names = {0: "-", 1: "晴", 2: "曇", 3: "雨", 4: "雪"}
+                weather_name = wind.get("weather_name", "不明")
+                if weather_name == "不明":
+                    weather_names = {0: "-", 1: "晴", 2: "曇", 3: "雨", 4: "雪"}
+                    weather_name = weather_names.get(wind.get("weather_num", 0), "-")
+
+                wind_dir_name = wind.get("wind_dir_name", "")
                 st.info(
-                    f"天候: {weather_names.get(wind.get('weather_num', 0), '-')}　"
+                    f"天候: {weather_name}　"
+                    f"風向: {wind_dir_name}　"
                     f"風速: {wind.get('wind_speed', '-')}m　"
                     f"波高: {wind.get('wave', '-')}cm"
                 )
 
-            # --- 選手情報 ---
+            # ★修正: 選手情報テーブルに展示STを追加
             st.subheader("🚤 選手情報 & AIスコア")
             boat_rows = []
             for i, bd in enumerate(result["boat_data"]):
@@ -724,11 +810,58 @@ elif mode == "個別レース予測":
                     "モーター2連": bd.get("motor_2rate", 0),
                     "展示T": bd.get("exhibition_time", 0),
                     "進入C": bd.get("entry_course", bd["waku"]),
+                    "展示ST": format_st(bd.get("_exhibition_st", 0.15)),
                     "AIスコア": f"{result['scores'][i]:.2f}",
                     "1着確率": f"{result['win_probs'][i]*100:.1f}%",
                 })
             st.dataframe(
                 pd.DataFrame(boat_rows),
+                use_container_width=True, hide_index=True,
+            )
+
+            # ★追加: スタート展示情報を別テーブルで表示
+            st.subheader("🏁 スタート展示")
+            st_rows = []
+            # 進入コース順に並べる
+            course_data = []
+            for bd in result["boat_data"]:
+                course_data.append({
+                    "course": bd.get("entry_course", bd["waku"]),
+                    "waku": bd["waku"],
+                    "name": bd["_name"],
+                    "st": bd.get("_exhibition_st", 0.15),
+                })
+            course_data.sort(key=lambda x: x["course"])
+
+            for cd in course_data:
+                st_val = cd["st"]
+                # フライング判定
+                if st_val < 0:
+                    st_display = f"F{abs(st_val):.2f}"
+                    st_status = "⚠️ フライング"
+                elif st_val == 0.15:
+                    st_display = "-"
+                    st_status = "未取得"
+                elif st_val <= 0.05:
+                    st_display = f".{st_val:.2f}"[1:]
+                    st_status = "🟢 好スタート"
+                elif st_val <= 0.10:
+                    st_display = f".{st_val:.2f}"[1:]
+                    st_status = "🟡 普通"
+                else:
+                    st_display = f".{st_val:.2f}"[1:]
+                    st_status = "🔴 遅い"
+
+                st_rows.append({
+                    "コース": cd["course"],
+                    "枠": f"{cd['waku']}号艇",
+                    "選手": cd["name"],
+                    "ST": st_display,
+                    "評価": st_status,
+                })
+
+            st.dataframe(
+                pd.DataFrame(st_rows),
                 use_container_width=True, hide_index=True,
             )
 
@@ -758,7 +891,7 @@ elif mode == "個別レース予測":
             )
 
             # ============================================
-            # ペアワイズ勝率マトリクス（追加部分）
+            # ペアワイズ勝率マトリクス
             # ============================================
             st.subheader("⚔️ ペアワイズ勝率マトリクス（各艇同士の勝率）")
             st.caption("行の艇が列の艇に勝つ確率（シグモイド変換）。例: 行「1号艇」× 列「4号艇」＝ 1号艇が4号艇に勝つ確率")
