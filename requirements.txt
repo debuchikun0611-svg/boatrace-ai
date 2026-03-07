@@ -1,7 +1,0 @@
-streamlit
-lightgbm
-requests
-beautifulsoup4
-numpy
-pandas
-matplotlib
