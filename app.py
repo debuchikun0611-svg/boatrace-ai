@@ -1,14 +1,4 @@
-# ============================================================
-# app.py を LambdaRank v2 対応に書き換え → 保存
-# ============================================================
-from google.colab import drive
-drive.mount("/content/drive", force_remount=True)
-
-import os
-
-BASE = "/content/drive/MyDrive/boatrace"
-
-new_app = r'''import streamlit as st
+import streamlit as st
 import requests
 from bs4 import BeautifulSoup
 import numpy as np
@@ -97,7 +87,7 @@ def load_model():
 
 
 # ============================================================
-# スクレイピング（変更なし）
+# スクレイピング
 # ============================================================
 def get_br_split(cell):
     for br in cell.find_all("br"):
@@ -553,7 +543,7 @@ def predict_race(jcd, hd, rno, model_v6, v6_boat_features, v6_feature_names,
     gn_rank = ranks_desc(gn_vals)
 
     # 1号艇データ
-    w1_data = boat_data[0]  # waku==1 は常にindex 0
+    w1_data = boat_data[0]
     et_mean = np.mean(et_vals)
     et_best = np.min(et_vals)
 
@@ -640,7 +630,6 @@ def predict_race(jcd, hd, rno, model_v6, v6_boat_features, v6_feature_names,
     # ==========================================
     # LambdaRank v2 三連単予測
     # ==========================================
-    # LR2用の艇特徴量リスト（バックテストと同じ順序）
     lr_boat_feats = [
         "waku","grade_num","age","weight",
         "national_win_rate","national_2rate","local_win_rate","local_2rate",
@@ -665,7 +654,7 @@ def predict_race(jcd, hd, rno, model_v6, v6_boat_features, v6_feature_names,
 
     n_lr2_feat = len(lr2_feature_names)
     wakus = [bd["waku"] for bd in boat_data]
-    all_perms = list(permutations(range(6), 3))  # 120通り
+    all_perms = list(permutations(range(6), 3))
 
     X_lr2 = np.zeros((120, n_lr2_feat), dtype=np.float32)
 
@@ -674,19 +663,16 @@ def predict_race(jcd, hd, rno, model_v6, v6_boat_features, v6_feature_names,
         b1, b2, b3 = boat_data[i1], boat_data[i2], boat_data[i3]
         idx = 0
 
-        # 1st, 2nd, 3rd 個別特徴量
         for b in [b1, b2, b3]:
             for f in lr_boat_feats:
                 X_lr2[pi, idx] = b.get(f, 0)
                 idx += 1
 
-        # ペア差分
         for f in diff_feats:
             X_lr2[pi, idx] = b1.get(f, 0) - b2.get(f, 0); idx += 1
             X_lr2[pi, idx] = b1.get(f, 0) - b3.get(f, 0); idx += 1
             X_lr2[pi, idx] = b2.get(f, 0) - b3.get(f, 0); idx += 1
 
-        # trio 統計
         for f in trio_feats:
             vs = [b1.get(f, 0), b2.get(f, 0), b3.get(f, 0)]
             X_lr2[pi, idx] = np.mean(vs); idx += 1
@@ -694,13 +680,11 @@ def predict_race(jcd, hd, rno, model_v6, v6_boat_features, v6_feature_names,
             X_lr2[pi, idx] = np.min(vs); idx += 1
             X_lr2[pi, idx] = np.max(vs); idx += 1
 
-        # 枠番特徴
         w1, w2, w3 = wakus[i1], wakus[i2], wakus[i3]
         X_lr2[pi, idx] = w1 + w2 + w3; idx += 1
         X_lr2[pi, idx] = w1 * w2 * w3; idx += 1
         X_lr2[pi, idx] = 1 if w1 == 1 else 0; idx += 1
 
-        # v6 スコア
         X_lr2[pi, idx] = v6_scores[i1]; idx += 1
         X_lr2[pi, idx] = v6_scores[i2]; idx += 1
         X_lr2[pi, idx] = v6_scores[i3]; idx += 1
@@ -709,7 +693,6 @@ def predict_race(jcd, hd, rno, model_v6, v6_boat_features, v6_feature_names,
 
     lr2_scores = model_lr2.predict(X_lr2)
 
-    # スコア → 確率（softmax）
     lr2_max = np.max(lr2_scores)
     lr2_exp = np.exp(lr2_scores - lr2_max)
     lr2_probs = lr2_exp / lr2_exp.sum()
@@ -724,7 +707,6 @@ def predict_race(jcd, hd, rno, model_v6, v6_boat_features, v6_feature_names,
     combos.sort(key=lambda x: -x["prob"])
     conf_score = combos[0]["prob"] - combos[1]["prob"] if len(combos) >= 2 else 0
 
-    # 各艇の1着確率（LR2から集計）
     win_probs_lr2 = np.zeros(6)
     for pi, perm in enumerate(all_perms):
         win_probs_lr2[perm[0]] += lr2_probs[pi]
@@ -732,9 +714,9 @@ def predict_race(jcd, hd, rno, model_v6, v6_boat_features, v6_feature_names,
     return {
         "jcd": jcd, "place": place_name, "rno": rno,
         "boat_data": boat_data,
-        "scores": v6_scores,  # v6スコア（表示用）
-        "win_probs": win_probs_lr2,  # LR2ベースの1着確率
-        "v6_win_probs": v6_win_probs,  # v6の1着確率（参考）
+        "scores": v6_scores,
+        "win_probs": win_probs_lr2,
+        "v6_win_probs": v6_win_probs,
         "ranked": np.argsort(-win_probs_lr2),
         "combos": combos[:20],
         "conf_score": conf_score,
@@ -769,8 +751,8 @@ st.caption("LambdaRank v2 三連単直接最適化 + ペアワイズv6 マトリ
  model_lr2, lr2_feature_names,
  place_stats, temperature) = load_model()
 st.sidebar.success(
-    f"モデル読込完了\\n"
-    f"- LambdaRank v2 ({len(lr2_feature_names)}特徴量)\\n"
+    f"モデル読込完了\n"
+    f"- LambdaRank v2 ({len(lr2_feature_names)}特徴量)\n"
     f"- ペアワイズv6 ({len(v6_boat_features)}基礎特徴量, T={temperature})"
 )
 
@@ -1116,41 +1098,3 @@ st.sidebar.markdown(
 """
 )
 st.sidebar.caption("※ 予測は参考情報です。投票は自己責任でお願いします。")
-'''
-
-# 保存
-# まず旧版をバックアップ
-backup_path = os.path.join(BASE, "app_v6_backup.py")
-app_path = os.path.join(BASE, "app.py")
-
-if os.path.exists(app_path):
-    import shutil
-    shutil.copy2(app_path, backup_path)
-    print(f"✅ バックアップ: {backup_path}")
-
-with open(app_path, "w") as f:
-    f.write(new_app)
-
-print(f"✅ 新 app.py 保存: {app_path}")
-print(f"   行数: {len(new_app.splitlines())}")
-
-# 必要ファイル確認
-required = [
-    "pairwise_model_v6.txt",
-    "boat_features_v6.json",
-    "column_mapping_v6.json",
-    "lambdarank_model_v2.txt",
-    "lambdarank_features_v2.json",
-    "place_stats_v4.json",
-    "temperature_v6.json",
-]
-print("\n📋 必要ファイル確認:")
-for fname in required:
-    path = os.path.join(BASE, fname)
-    exists = os.path.exists(path)
-    size = os.path.getsize(path) / 1024 if exists else 0
-    print(f"  {'✅' if exists else '❌'} {fname} ({size:.0f} KB)")
-
-print("\n✅ 完了！")
-print("app.pyをデプロイ先にアップロードしてください。")
-print("lambdarank_model_v2.txt と lambdarank_features_v2.json も同じディレクトリに配置してください。")
