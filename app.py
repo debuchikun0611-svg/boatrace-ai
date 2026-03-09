@@ -14,27 +14,22 @@ matplotlib.rcParams["font.family"] = "DejaVu Sans"
 # パス設定
 # ============================================================
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-# Streamlit Cloud対応: ファイルが見つからない場合のフォールバック
 if not os.path.exists(os.path.join(SCRIPT_DIR, "ensemble_model_0.txt")):
-    # カレントディレクトリを試す
     if os.path.exists("ensemble_model_0.txt"):
         SCRIPT_DIR = "."
     elif os.path.exists("/mount/src/boatrace-ai/ensemble_model_0.txt"):
         SCRIPT_DIR = "/mount/src/boatrace-ai"
 
-# v6 ペアワイズ（マトリクス表示用）
 MODEL_V6_PATH = os.path.join(SCRIPT_DIR, "pairwise_model_v6.txt")
 BOAT_FEATURES_V6_PATH = os.path.join(SCRIPT_DIR, "boat_features_v6.json")
 COLUMN_MAPPING_V6_PATH = os.path.join(SCRIPT_DIR, "column_mapping_v6.json")
 
-# アンサンブルモデル（10体）
 ENSEMBLE_MODEL_PATHS = [
     os.path.join(SCRIPT_DIR, f"ensemble_model_{i}.txt") for i in range(10)
 ]
 ENSEMBLE_CONFIG_PATH = os.path.join(SCRIPT_DIR, "ensemble_config.json")
 LR2_FEATURES_PATH = os.path.join(SCRIPT_DIR, "lambdarank_features_v2.json")
 
-# 共通設定
 PLACE_STATS_PATH = os.path.join(SCRIPT_DIR, "place_stats_v4.json")
 TEMPERATURE_PATH = os.path.join(SCRIPT_DIR, "temperature_v6.json")
 
@@ -74,14 +69,12 @@ WIND_EFFECT = {
 # ============================================================
 @st.cache_resource
 def load_models():
-    # v6 ペアワイズ
     model_v6 = lgb.Booster(model_file=MODEL_V6_PATH)
     with open(BOAT_FEATURES_V6_PATH, "r") as f:
         v6_boat_features = json.load(f)
     with open(COLUMN_MAPPING_V6_PATH, "r") as f:
         v6_col_map = json.load(f)
 
-    # アンサンブル10モデル
     ensemble_models = []
     for i, path in enumerate(ENSEMBLE_MODEL_PATHS):
         try:
@@ -89,18 +82,16 @@ def load_models():
                 m = lgb.Booster(model_file=path)
                 ensemble_models.append(m)
             else:
-                # ファイルが見つからない場合、同じディレクトリを検索
                 alt_path = os.path.join(SCRIPT_DIR, f"ensemble_model_{i}.txt")
                 if os.path.exists(alt_path):
                     m = lgb.Booster(model_file=alt_path)
                     ensemble_models.append(m)
-        except Exception as e:
-            pass  # 壊れたモデルはスキップ
-    
+        except Exception:
+            pass
+
     with open(LR2_FEATURES_PATH, "r") as f:
         lr2_features = json.load(f)
 
-    # 設定
     with open(PLACE_STATS_PATH, "r") as f:
         ps_raw = json.load(f)
     place_w1 = {}
@@ -112,7 +103,6 @@ def load_models():
         t_cfg = json.load(f)
     temperature = float(t_cfg.get("temperature", t_cfg.get("T", 5.0)))
 
-    # アンサンブル設定
     ens_config = {}
     if os.path.exists(ENSEMBLE_CONFIG_PATH):
         with open(ENSEMBLE_CONFIG_PATH, "r") as f:
@@ -127,6 +117,26 @@ def load_models():
 # ============================================================
 def get_text(el):
     return el.get_text(strip=True) if el else ""
+
+def get_text_br(tag):
+    """brタグを改行に変換してテキスト取得"""
+    if tag is None:
+        return ""
+    for br in tag.find_all("br"):
+        br.replace_with("\n")
+    return tag.get_text(strip=False)
+
+def parse_td_lines(td):
+    """td内のbr区切りテキストを行ごとの数値リストとして返す"""
+    raw = get_text_br(td)
+    lines = [l.strip() for l in raw.split('\n') if l.strip()]
+    nums = []
+    for line in lines:
+        try:
+            nums.append(float(line))
+        except ValueError:
+            pass
+    return nums
 
 def safe_float(x, default=0.0):
     try:
@@ -145,13 +155,12 @@ def scrape_racelist(date_str):
         return {}
 
     venues = {}
-    # 開催場を検出
     table = soup.select("div.table1")
     for div in table:
         links = div.select("a[href*='raceindex']")
         for a in links:
             href = a.get("href", "")
-            m = re.search(r"jcd=(\\d+)", href)
+            m = re.search(r"jcd=(\d+)", href)
             if m:
                 jcd = m.group(1).zfill(2)
                 name = PLACE_MAP.get(jcd, jcd)
@@ -171,24 +180,8 @@ def scrape_racelist(date_str):
 
 def scrape_beforeinfo(jcd, race_num, date_str):
     """出走表＋直前情報をスクレイピング"""
-    import re
     result = {"weather": "", "wind_dir": "", "wind_speed": 0, "wave": 0, "boats": []}
     boats = []
-
-    def split_combined_nums(text):
-        """'6.5149.0768.52' → [6.51, 49.07, 68.52] のように分割"""
-        nums = []
-        # 正規表現で小数点付き数値を順に抽出
-        pattern = r'(\d+\.\d+)'
-        found = re.findall(pattern, text)
-        if found:
-            return [float(x) for x in found]
-        # 整数も試す
-        pattern2 = r'(\d+\.?\d*)'
-        found2 = re.findall(pattern2, text)
-        if found2:
-            return [float(x) for x in found2]
-        return nums
 
     def parse_fl_st(text):
         """'F0L00.13' → (f_count, l_count, avg_st)"""
@@ -201,7 +194,6 @@ def scrape_beforeinfo(jcd, race_num, date_str):
         m_l = re.search(r'L(\d+)', text)
         if m_l:
             l_count = int(m_l.group(1))
-        # 平均ST: 最後の小数値
         nums = re.findall(r'(\d+\.\d+)', text)
         if nums:
             avg_st = float(nums[-1])
@@ -238,7 +230,7 @@ def scrape_beforeinfo(jcd, race_num, date_str):
                 b["avg_st"] = avg_st
 
                 # td[4]: 全国勝率, 全国2連率, 全国3連率
-                vals4 = split_combined_nums(get_text(tds[4]))
+                vals4 = parse_td_lines(tds[4])
                 if len(vals4) >= 3:
                     b["national_win_rate"] = vals4[0]
                     b["national_2連rate"] = vals4[1]
@@ -250,7 +242,7 @@ def scrape_beforeinfo(jcd, race_num, date_str):
                     b["national_win_rate"] = vals4[0]
 
                 # td[5]: 当地勝率, 当地2連率, 当地3連率
-                vals5 = split_combined_nums(get_text(tds[5]))
+                vals5 = parse_td_lines(tds[5])
                 if len(vals5) >= 3:
                     b["local_win_rate"] = vals5[0]
                     b["local_2連rate"] = vals5[1]
@@ -262,7 +254,7 @@ def scrape_beforeinfo(jcd, race_num, date_str):
                     b["local_win_rate"] = vals5[0]
 
                 # td[6]: モーターNo, モーター2連率, モーター3連率
-                vals6 = split_combined_nums(get_text(tds[6]))
+                vals6 = parse_td_lines(tds[6])
                 if len(vals6) >= 3:
                     b["motor_2連rate"] = vals6[1]
                     b["motor_3連rate"] = vals6[2]
@@ -270,7 +262,7 @@ def scrape_beforeinfo(jcd, race_num, date_str):
                     b["motor_2連rate"] = vals6[1]
 
                 # td[7]: ボートNo, ボート2連率, ボート3連率
-                vals7 = split_combined_nums(get_text(tds[7]))
+                vals7 = parse_td_lines(tds[7])
                 if len(vals7) >= 3:
                     b["boat_2連rate"] = vals7[1]
                     b["boat_3連rate"] = vals7[2]
@@ -301,37 +293,33 @@ def scrape_beforeinfo(jcd, race_num, date_str):
         # --- 天候 ---
         weather_div = soup2.select_one("div.weather1")
         if weather_div:
-            # 天候 (is-weather1=晴, is-weather2=曇り, etc.)
             wp = weather_div.select_one("p[class*='is-weather']")
             if wp:
                 for cls in wp.get("class", []):
                     if cls.startswith("is-weather"):
                         wcode = cls.replace("is-weather", "")
-                        weather_map = {"1": "晴", "2": "曇り", "3": "雨", "4": "雪", "5": "霧"}
-                        result["weather"] = weather_map.get(wcode, "")
-            # 天候テキストからも取得
+                        wmap = {"1": "晴", "2": "曇り", "3": "雨", "4": "雪", "5": "霧"}
+                        result["weather"] = wmap.get(wcode, "")
             if not result["weather"]:
                 for span in weather_div.select("span.weather1_bodyUnitLabelTitle"):
                     txt = get_text(span)
                     if txt in ["晴", "曇り", "雨", "雪", "霧"]:
                         result["weather"] = txt
 
-            # 風向 (is-wind12 → 西南西 etc.)
             wind_p = weather_div.select_one("p[class*='is-wind']")
             if wind_p:
                 for cls in wind_p.get("class", []):
                     m = re.search(r'is-wind(\d+)', cls)
                     if m:
                         wind_num = m.group(1)
-                        wind_map = {
-                            "1": "北", "2": "北北東", "3": "北東", "4": "東北東",
-                            "5": "東", "6": "東南東", "7": "南東", "8": "南南東",
-                            "9": "南", "10": "南南西", "11": "南西", "12": "西南西",
-                            "13": "西", "14": "西北西", "15": "北西", "16": "北北西"
+                        wdmap = {
+                            "1":"北","2":"北北東","3":"北東","4":"東北東",
+                            "5":"東","6":"東南東","7":"南東","8":"南南東",
+                            "9":"南","10":"南南西","11":"南西","12":"西南西",
+                            "13":"西","14":"西北西","15":"北西","16":"北北西"
                         }
-                        result["wind_dir"] = wind_map.get(wind_num, "")
+                        result["wind_dir"] = wdmap.get(wind_num, "")
 
-            # 風速・波高
             for unit in weather_div.select("div.weather1_bodyUnit"):
                 title_span = unit.select_one("span.weather1_bodyUnitLabelTitle")
                 data_span = unit.select_one("span.weather1_bodyUnitLabelData")
@@ -344,13 +332,12 @@ def scrape_beforeinfo(jcd, race_num, date_str):
                     elif "波高" in title:
                         result["wave"] = num
 
-        # --- 展示タイム・スタート情報 ---
+        # --- 展示タイム ---
         tbody_list2 = soup2.select("tbody.is-fs12")
         for i, tbody in enumerate(tbody_list2[:6]):
             if i >= len(boats):
                 break
             tds = tbody.select("td")
-            # td[4] = 展示タイム (6.67 etc.)
             if len(tds) > 4:
                 try:
                     et = float(get_text(tds[4]))
@@ -359,10 +346,9 @@ def scrape_beforeinfo(jcd, race_num, date_str):
                 except:
                     pass
 
-        # --- スタート展示（進入コース）取得 ---
+        # --- スタート展示（進入コース・STタイミング）取得 ---
         start_table = soup2.select_one("div.table1")
         if start_table:
-            # スタート展示のテーブルからコース順を取得
             course_spans = start_table.select("span")
             course_nums = []
             for sp in course_spans:
@@ -377,23 +363,21 @@ def scrape_beforeinfo(jcd, race_num, date_str):
                             b["course_diff"] = b["entry_course"] - b["waku"]
                             break
 
-            # STタイミング取得
             st_cells = start_table.select("td")
             st_vals = []
             for td in st_cells:
                 txt = get_text(td).strip()
-                # ".17" or "F.04" or "0.17" パターン
-                m = re.match(r'^[F]?\.(\d+)$', txt)
+                m = re.match(r'^F\.(\d+)$', txt)
                 if m:
-                    val = float(f"0.{m.group(1)}")
-                    if txt.startswith("F"):
-                        val = -val
-                    st_vals.append(val)
-                else:
-                    m2 = re.match(r'^0\.(\d+)$', txt)
-                    if m2:
-                        st_vals.append(float(txt))
-            # st_valsをコース順のボートに割り当て
+                    st_vals.append(-float(f"0.{m.group(1)}"))
+                    continue
+                m2 = re.match(r'^\.(\d+)$', txt)
+                if m2:
+                    st_vals.append(float(f"0.{m2.group(1)}"))
+                    continue
+                m3 = re.match(r'^0\.(\d+)$', txt)
+                if m3:
+                    st_vals.append(float(txt))
             if len(st_vals) >= 6 and len(course_nums) >= 6:
                 for ci, waku_num in enumerate(course_nums[:6]):
                     if ci < len(st_vals):
@@ -407,7 +391,6 @@ def scrape_beforeinfo(jcd, race_num, date_str):
 
     result["boats"] = boats
     return result
-
 
 # ============================================================
 # 予測
@@ -423,7 +406,6 @@ def predict_race(boats_data, jcd_code, model_v6, v6_boat_features,
         if len(boats) < 6:
             return None
 
-        # 天候特徴量
         weather_val = WEATHER_MAP.get(str(boats_data.get("weather", "")), 0)
         wind_dir_str = str(boats_data.get("wind_dir", ""))
         wind_dir_val = WIND_DIR_MAP.get(wind_dir_str, 0)
@@ -432,7 +414,6 @@ def predict_race(boats_data, jcd_code, model_v6, v6_boat_features,
 
         pw1 = place_w1.get(jcd, 55.0)
 
-        # 各艇の基本特徴量を確実にセット
         for b in boats:
             b["jcd"] = jcd
             b["grade"] = 0
@@ -443,7 +424,6 @@ def predict_race(boats_data, jcd_code, model_v6, v6_boat_features,
             b["place_w1_winrate"] = pw1
             b["waku_win_hist"] = WAKU_WIN_HIST.get(b.get("waku", 1), 5.0)
 
-            # 数値フィールドを確実にfloatに
             for key in ["national_win_rate", "national_2連rate", "national_3連rate",
                         "local_win_rate", "local_2連rate", "local_3連rate",
                         "motor_2連rate", "motor_3連rate", "boat_2連rate", "boat_3連rate",
@@ -456,7 +436,6 @@ def predict_race(boats_data, jcd_code, model_v6, v6_boat_features,
             b["course_diff"] = b["entry_course"] - b.get("waku", 1)
             b["machine_score"] = (b["motor_2連rate"] + b["boat_2連rate"]) / 2
 
-        # 相対特徴量
         stats_keys = ["national_win_rate", "national_2連rate",
                       "local_win_rate", "motor_2連rate",
                       "exhibition_time", "avg_st", "machine_score"]
@@ -475,7 +454,7 @@ def predict_race(boats_data, jcd_code, model_v6, v6_boat_features,
             b["et_diff_mean"] = b["exhibition_time"] - means["exhibition_time"]
             b["et_diff_best"] = b["exhibition_time"] - min(vals["exhibition_time"])
 
-        # v6スコア計算
+        # v6スコア
         v6_n_feat = model_v6.num_feature()
         raw_feats = []
         for b in boats:
@@ -518,7 +497,7 @@ def predict_race(boats_data, jcd_code, model_v6, v6_boat_features,
         for i, b in enumerate(boats):
             b["v6_score"] = float(win_scores[i])
 
-        # 120通り候補の特徴量構築
+        # 120通り候補
         boat_keys = [
             "waku", "national_win_rate", "national_2連rate", "national_3連rate",
             "local_win_rate", "motor_2連rate", "motor_3連rate", "exhibition_time",
@@ -591,7 +570,6 @@ def predict_race(boats_data, jcd_code, model_v6, v6_boat_features,
         all_scores = np.array(all_scores)
         ensemble_score = all_scores.mean(axis=0)
 
-        # 多数決
         votes = {}
         for mi in range(len(ensemble_models)):
             best_idx = int(np.argmax(all_scores[mi]))
@@ -599,7 +577,6 @@ def predict_race(boats_data, jcd_code, model_v6, v6_boat_features,
             combo = f"{perm[0]}-{perm[1]}-{perm[2]}"
             votes[combo] = votes.get(combo, 0) + 1
 
-        # ランキング
         ranking = np.argsort(-ensemble_score)
 
         top_combos = []
@@ -623,7 +600,6 @@ def predict_race(boats_data, jcd_code, model_v6, v6_boat_features,
 
         top1_votes = top_combos[0]["votes"] if top_combos else 0
 
-        # 勝率
         boat_win_scores = np.zeros(6)
         for pi, perm in enumerate(PERMS_120):
             if pi < len(ensemble_score):
@@ -646,7 +622,6 @@ def predict_race(boats_data, jcd_code, model_v6, v6_boat_features,
         st.error(f"予測エラー: {str(e)}")
         return None
 
-
 # ============================================================
 # 表示ヘルパー
 # ============================================================
@@ -660,7 +635,6 @@ def format_st(val):
         return str(val)
 
 def confidence_label(conf, votes, total):
-    """確信度と票数から信頼レベルを判定"""
     vote_ratio = votes / total if total > 0 else 0
     if vote_ratio >= 0.8 and conf >= 0.10:
         return "🔴 超高信頼", "red"
@@ -678,20 +652,18 @@ st.set_page_config(page_title="ボートレース AI v8", layout="wide")
 st.title("🚤 ボートレース AI 予測 v8")
 st.caption("10モデル アンサンブル ｜ LambdaRank × 多数決 ｜ ペアワイズv6 マトリクス表示")
 
-# モデル読み込み
 (model_v6, v6_boat_features, v6_col_map,
  ensemble_models, lr2_features,
  place_w1, temperature, ens_config) = load_models()
 
 n_models = len(ensemble_models)
 st.sidebar.success(
-    f"モデル読込完了\\n"
-    f"- アンサンブル: {n_models}モデル\\n"
-    f"- 特徴量数: {len(lr2_features)}\\n"
+    f"モデル読込完了\n"
+    f"- アンサンブル: {n_models}モデル\n"
+    f"- 特徴量数: {len(lr2_features)}\n"
     f"- バックテスト ROI: 135.9%"
 )
 
-# サイドバー設定
 import datetime
 st.sidebar.header("設定")
 today = datetime.date.today()
@@ -726,27 +698,27 @@ if mode == "全場一括予測":
                     try:
                         data = scrape_beforeinfo(jcd, rno, date_str)
                         if data and len(data.get("boats", [])) >= 6:
-                            result = predict_race(
+                            res = predict_race(
                                 data, jcd, model_v6, v6_boat_features,
                                 ensemble_models, lr2_features, place_w1, temperature
                             )
-                            if result:
-                                top1 = result["top_combos"][0]
+                            if res:
+                                top1 = res["top_combos"][0]
                                 label, color = confidence_label(
-                                    result["confidence"], 
-                                    result["top1_votes"],
-                                    result["total_models"]
+                                    res["confidence"],
+                                    res["top1_votes"],
+                                    res["total_models"]
                                 )
                                 all_results.append({
                                     "場": venue_name,
                                     "R": rno,
                                     "予測": top1["combo"],
-                                    "票数": f"{result['top1_votes']}/{result['total_models']}",
-                                    "確信度": result["confidence"],
+                                    "票数": f"{res['top1_votes']}/{res['total_models']}",
+                                    "確信度": res["confidence"],
                                     "信頼": label,
                                     "jcd": jcd
                                 })
-                    except Exception as e:
+                    except Exception:
                         pass
 
                     done += 1
@@ -758,7 +730,6 @@ if mode == "全場一括予測":
             if all_results:
                 df_results = pd.DataFrame(all_results)
 
-                # 高信頼レース（8票以上）
                 high_conf = df_results[df_results["票数"].apply(
                     lambda x: int(x.split("/")[0]) >= 8)]
 
@@ -807,7 +778,6 @@ else:
             else:
                 st.header(f"🏁 {sel_venue} {sel_race}R")
 
-                # 天候情報
                 col_w1, col_w2, col_w3, col_w4 = st.columns(4)
                 col_w1.metric("天候", data.get("weather", "-"))
                 col_w2.metric("風向", data.get("wind_dir", "-"))
@@ -816,7 +786,6 @@ else:
 
                 st.divider()
 
-                # 信頼度メトリクス
                 label, color = confidence_label(
                     result["confidence"],
                     result["top1_votes"],
@@ -833,7 +802,7 @@ else:
 
                 st.divider()
 
-                # 選手情報テーブル
+                # 出走情報
                 st.subheader("🚤 出走情報")
                 boat_df = pd.DataFrame([{
                     "枠": b["waku"],
@@ -851,7 +820,7 @@ else:
 
                 st.divider()
 
-                # Top-10 三連単予測
+                # Top-10
                 st.subheader("🏆 三連単 Top-10 予測")
                 top10_data = []
                 for tc in result["top_combos"][:10]:
@@ -868,7 +837,7 @@ else:
 
                 st.divider()
 
-                # 多数決詳細
+                # 多数決
                 st.subheader("🗳️ モデル投票分布")
                 vote_sorted = sorted(result["votes"].items(), key=lambda x: -x[1])
                 vote_data = []
@@ -880,7 +849,7 @@ else:
 
                 st.divider()
 
-                # ペアワイズ勝率マトリクス
+                # ペアワイズマトリクス
                 st.subheader("📊 ペアワイズ勝率マトリクス")
                 pw = result["pw_matrix"]
                 fig, ax = plt.subplots(figsize=(6, 5))
@@ -901,7 +870,7 @@ else:
                 st.pyplot(fig)
                 plt.close()
 
-                # 平均勝率ランキング
+                # ランキング
                 avg_pw = pw.sum(axis=1) / 5
                 rank_order = np.argsort(-avg_pw)
                 st.subheader("📈 総合力ランキング")
@@ -918,56 +887,6 @@ else:
 
 # フッター
 st.divider()
-# デバッグモード
-st.divider()
-with st.expander("🔧 デバッグ: HTML構造確認"):
-    debug_jcd = st.text_input("場コード (例: 10)", "10")
-    debug_rno = st.text_input("レース番号", "3")
-    if st.button("HTML取得"):
-        # 出走表
-        url1 = f"https://www.boatrace.jp/owpc/pc/race/racelist?rno={debug_rno}&jcd={debug_jcd}&hd={date_str}"
-        try:
-            r1 = requests.get(url1, headers=HEADERS, timeout=15)
-            soup1 = BeautifulSoup(r1.content, "html.parser")
-            tbody_list = soup1.select("tbody.is-fs12")
-            st.write(f"出走表 tbody数: {len(tbody_list)}")
-            for i, tbody in enumerate(tbody_list[:2]):
-                st.write(f"--- 枠{i+1} ---")
-                tds = tbody.select("td")
-                st.write(f"td数: {len(tds)}")
-                for j, td in enumerate(tds):
-                    cls = td.get("class", [])
-                    txt = td.get_text(strip=True)[:60]
-                    st.text(f"td[{j}]: class={cls} text='{txt}'")
-        except Exception as e:
-            st.error(f"出走表エラー: {e}")
-
-        # 直前情報
-        url2 = f"https://www.boatrace.jp/owpc/pc/race/beforeinfo?rno={debug_rno}&jcd={debug_jcd}&hd={date_str}"
-        try:
-            r2 = requests.get(url2, headers=HEADERS, timeout=15)
-            soup2 = BeautifulSoup(r2.content, "html.parser")
-
-            st.write("--- 天候 ---")
-            weather_section = soup2.select_one("div.weather1")
-            if weather_section:
-                st.code(str(weather_section)[:1500])
-            else:
-                st.write("weather1 not found")
-
-            st.write("--- 直前情報 tbody ---")
-            tbody_list2 = soup2.select("tbody.is-fs12")
-            st.write(f"tbody数: {len(tbody_list2)}")
-            for i, tbody in enumerate(tbody_list2[:2]):
-                st.write(f"--- 枠{i+1} ---")
-                tds = tbody.select("td")
-                st.write(f"td数: {len(tds)}")
-                for j, td in enumerate(tds):
-                    cls = td.get("class", [])
-                    txt = td.get_text(strip=True)[:60]
-                    st.text(f"td[{j}]: class={cls} text='{txt}'")
-        except Exception as e:
-            st.error(f"直前情報エラー: {e}")
 st.caption(
     f"🤖 Boatrace AI v8 | {n_models}モデル アンサンブル LambdaRank | "
     f"{len(lr2_features)}特徴量 | "
