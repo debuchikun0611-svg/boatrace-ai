@@ -76,9 +76,19 @@ def load_models():
 
     # アンサンブル10モデル
     ensemble_models = []
-    for path in ENSEMBLE_MODEL_PATHS:
-        if os.path.exists(path):
-            ensemble_models.append(lgb.Booster(model_file=path))
+    for i, path in enumerate(ENSEMBLE_MODEL_PATHS):
+        try:
+            if os.path.exists(path):
+                m = lgb.Booster(model_file=path)
+                ensemble_models.append(m)
+            else:
+                # ファイルが見つからない場合、同じディレクトリを検索
+                alt_path = os.path.join(SCRIPT_DIR, f"ensemble_model_{i}.txt")
+                if os.path.exists(alt_path):
+                    m = lgb.Booster(model_file=alt_path)
+                    ensemble_models.append(m)
+        except Exception as e:
+            pass  # 壊れたモデルはスキップ
     
     with open(LR2_FEATURES_PATH, "r") as f:
         lr2_features = json.load(f)
