@@ -171,208 +171,223 @@ def scrape_racelist(date_str):
 
 def scrape_beforeinfo(jcd, race_num, date_str):
     """直前情報をスクレイピング"""
-    url = f"https://www.boatrace.jp/owpc/pc/race/beforeinfo?rno={race_num}&jcd={jcd}&hd={date_str}"
-    try:
-        r = requests.get(url, headers=HEADERS, timeout=10)
-        soup = BeautifulSoup(r.content, "html.parser")
-    except:
-        return None
-
     result = {
         "weather": "", "wind_dir": "", "wind_speed": 0, "wave": 0,
         "boats": []
     }
 
-    # 天候情報
-    weather_div = soup.select_one("div.weather1")
-    if weather_div:
-        w_body = weather_div.select("div.weather1_body")
-        for wb in w_body:
-            label = get_text(wb.select_one("div.weather1_bodyUnitLabelTitle"))
-            value = get_text(wb.select_one("div.weather1_bodyUnitLabelData"))
-            if not value:
-                img = wb.select_one("img")
-                if img:
-                    alt = img.get("alt", "")
-                    value = alt
-            if "天候" in label:
-                result["weather"] = value
-            elif "風向" in label:
-                result["wind_dir"] = value
-            elif "風速" in label:
-                result["wind_speed"] = safe_float(re.sub(r"[^0-9.]", "", value))
-            elif "波高" in label:
-                result["wave"] = safe_float(re.sub(r"[^0-9.]", "", value))
-
-    # 出走表
-    racelist_url = f"https://www.boatrace.jp/owpc/pc/race/racelist?rno={race_num}&jcd={jcd}&hd={date_str}"
+    # 直前情報ページ
+    url_before = f"https://www.boatrace.jp/owpc/pc/race/beforeinfo?rno={race_num}&jcd={jcd}&hd={date_str}"
     try:
-        r2 = requests.get(racelist_url, headers=HEADERS, timeout=10)
-        soup2 = BeautifulSoup(r2.content, "html.parser")
-    except:
-        soup2 = None
-
-    boats = []
-    rows = soup.select("tbody.is-fs12")
-    for i, row in enumerate(rows[:6]):
-        waku = i + 1
-        tds = row.select("td")
-
-        boat = {"waku": waku}
-
-        # 展示タイム
-        et_el = row.select_one("td.is-boatColor1") or (tds[4] if len(tds) > 4 else None)
-        boat["exhibition_time"] = safe_float(get_text(et_el)) if et_el else 0.0
-
-        # スタート展示
-        spans = row.select("span")
-        for sp in spans:
-            txt = get_text(sp)
-            if txt.startswith("F") or txt.startswith(".") or txt.startswith("L"):
-                boat["start_timing"] = safe_float(txt.replace("F", "-").replace("L", "0."))
-                break
-        if "start_timing" not in boat:
-            boat["start_timing"] = 0.0
-
-        boats.append(boat)
-
-    # 進入コース
-    course_div = soup.select_one("div.table1[class*='startCourse']")
-    if not course_div:
-        course_div = soup.select_one("div.startCourse")
-    
-    entry_courses = {}
-    if course_div:
-        course_spans = course_div.select("span")
-        for ci, sp in enumerate(course_spans[:6]):
-            txt = get_text(sp)
-            w = safe_float(txt)
-            if 1 <= w <= 6:
-                entry_courses[ci+1] = int(w)
-    
-    # 出走表から選手情報
-    racer_info = {}
-    if soup2:
-        r_rows = soup2.select("tbody.is-fs12")
-        for i, rr in enumerate(r_rows[:6]):
-            w = i + 1
-            info = {}
-            tds = rr.select("td")
-            
-            # 各種勝率
-            rate_cells = rr.select("td")
-            nums = []
-            for td in rate_cells:
-                txt = get_text(td)
-                try:
-                    nums.append(float(txt))
-                except:
-                    pass
-            
-            racer_info[w] = nums
-
-    # ボート情報組み立て
-    for b in boats:
-        w = b["waku"]
-        if w in entry_courses:
-            b["entry_course"] = entry_courses[w]
-        else:
-            b["entry_course"] = w
-        b["course_diff"] = b["entry_course"] - w
-
-    result["boats"] = boats
-    result["racer_info"] = racer_info
-
-    # 出走表の詳細データ取得
-    detail_boats = scrape_racelist_detail(jcd, race_num, date_str)
-    if detail_boats:
-        for db in detail_boats:
-            w = db["waku"]
-            for b in boats:
-                if b["waku"] == w:
-                    b.update(db)
-                    break
-
-    result["boats"] = boats
-    return result
-
-def scrape_racelist_detail(jcd, race_num, date_str):
-    """出走表から選手成績を取得"""
-    url = f"https://www.boatrace.jp/owpc/pc/race/racelist?rno={race_num}&jcd={jcd}&hd={date_str}"
-    try:
-        r = requests.get(url, headers=HEADERS, timeout=10)
+        r = requests.get(url_before, headers=HEADERS, timeout=10)
         soup = BeautifulSoup(r.content, "html.parser")
     except:
         return None
 
-    boats = []
-    rows = soup.select("tbody.is-fs12")
-    for i, row in enumerate(rows[:6]):
-        waku = i + 1
-        b = {"waku": waku}
+    # 天候情報
+    weather_divs = soup.select("div.weather1_body")
+    for wd in weather_divs:
+        label_el = wd.select_one("p.weather1_bodyUnitLabelTitle")
+        if not label_el:
+            label_el = wd.select_one("span.weather1_bodyUnitLabelTitle")
+        label = get_text(label_el)
 
-        tds = row.select("td")
-        nums = []
+        data_el = wd.select_one("p.weather1_bodyUnitLabelData")
+        if not data_el:
+            data_el = wd.select_one("span.weather1_bodyUnitLabelData")
+        data_txt = get_text(data_el)
+
+        if not data_txt:
+            img = wd.select_one("img")
+            if img:
+                data_txt = img.get("alt", "")
+
+        if "天候" in label:
+            result["weather"] = data_txt
+        elif "風速" in label:
+            result["wind_speed"] = safe_float(re.sub(r"[^0-9.]", "", data_txt))
+        elif "波高" in label:
+            result["wave"] = safe_float(re.sub(r"[^0-9.]", "", data_txt))
+
+    # 風向きは画像のclassから取得
+    wind_img = soup.select_one("p.weather1_bodyUnitImage img")
+    if wind_img:
+        alt = wind_img.get("alt", "")
+        if alt:
+            result["wind_dir"] = alt
+        else:
+            cls = wind_img.get("class", [])
+            for c in cls:
+                if "is-wind" in c:
+                    num = re.sub(r"[^0-9]", "", c)
+                    wind_names = {
+                        "1":"北","2":"北北東","3":"北東","4":"東北東",
+                        "5":"東","6":"東南東","7":"南東","8":"南南東",
+                        "9":"南","10":"南南西","11":"南西","12":"西南西",
+                        "13":"西","14":"西北西","15":"北西","16":"北北西"
+                    }
+                    result["wind_dir"] = wind_names.get(num, "")
+
+    # 展示タイム・ST
+    boats = []
+    tbody_list = soup.select("tbody.is-fs12")
+    for i, tbody in enumerate(tbody_list[:6]):
+        waku = i + 1
+        boat = {"waku": waku}
+
+        tds = tbody.select("td")
+        # 展示タイムを探す
         for td in tds:
             txt = get_text(td)
-            txt_clean = txt.replace("R", "").replace("F", "").replace("L", "").strip()
             try:
-                nums.append(float(txt_clean))
+                v = float(txt)
+                if 6.0 <= v <= 7.5:  # 展示タイムの範囲
+                    boat["exhibition_time"] = v
+                    break
             except:
                 pass
+        if "exhibition_time" not in boat:
+            boat["exhibition_time"] = 0.0
 
-        # 一般的な出走表の列順:
-        # 枠, 登番, 選手名, 年齢, 支部, 体重, 級別, 全国勝率, 全国2連率, 当地勝率, 当地2連率,
-        # モーターNo, モーター2連率, ボートNo, ボート2連率
-        if len(nums) >= 10:
-            b["national_win_rate"] = nums[0] if len(nums) > 0 else 0
-            b["national_2連rate"] = nums[1] if len(nums) > 1 else 0
-            b["local_win_rate"] = nums[2] if len(nums) > 2 else 0
-            b["local_2連rate"] = nums[3] if len(nums) > 3 else 0
-            b["motor_2連rate"] = nums[5] if len(nums) > 5 else 0
-            b["boat_2連rate"] = nums[7] if len(nums) > 7 else 0
-        elif len(nums) >= 6:
-            b["national_win_rate"] = nums[0]
-            b["national_2連rate"] = nums[1]
-            b["local_win_rate"] = nums[2]
-            b["local_2連rate"] = nums[3]
-            b["motor_2連rate"] = nums[4]
-            b["boat_2連rate"] = nums[5]
+        # スタートタイミング
+        boat["start_timing"] = 0.0
+        for td in tds:
+            txt = get_text(td)
+            if re.match(r"^[FL]?\d*\.?\d+$", txt):
+                if txt.startswith("F"):
+                    boat["start_timing"] = -safe_float(txt[1:])
+                elif txt.startswith("L"):
+                    boat["start_timing"] = safe_float(txt[1:])
+                else:
+                    v = safe_float(txt)
+                    if 0 < v < 1.0:
+                        boat["start_timing"] = v
+
+        boats.append(boat)
+
+    # 進入コース
+    course_table = soup.select("div.table1 table")
+    entry_courses = {}
+    for tbl in course_table:
+        spans = tbl.select("span")
+        course_nums = []
+        for sp in spans:
+            txt = get_text(sp)
+            if txt.isdigit() and 1 <= int(txt) <= 6:
+                course_nums.append(int(txt))
+        if len(course_nums) == 6:
+            for ci, cn in enumerate(course_nums):
+                entry_courses[cn] = ci + 1  # waku cn → course ci+1
+            break
+
+    for b in boats:
+        w = b["waku"]
+        if w in entry_courses:
+            b["entry_course"] = float(entry_courses[w])
         else:
-            b["national_win_rate"] = 0
-            b["national_2連rate"] = 0
-            b["local_win_rate"] = 0
-            b["local_2連rate"] = 0
-            b["motor_2連rate"] = 0
-            b["boat_2連rate"] = 0
+            b["entry_course"] = float(w)
+        b["course_diff"] = b["entry_course"] - w
 
-        # グレード判定
-        grade_el = row.select_one("td.is-gradeColor")
-        grade_txt = get_text(grade_el) if grade_el else ""
-        grade_map_local = {"A1":3, "A2":2, "B1":1, "B2":0}
-        b["racer_grade"] = grade_txt
-
-        b["national_3連rate"] = 0.0
-        b["local_3連rate"] = 0.0
-        b["motor_3連rate"] = 0.0
-        b["boat_3連rate"] = 0.0
-        b["flying_count"] = 0.0
-        b["late_count"] = 0.0
-        b["avg_st"] = 0.0
-        b["machine_score"] = (b.get("motor_2連rate",0) + b.get("boat_2連rate",0)) / 2
-
-        boats.append(b)
-
-    return boats
-
-def check_race_exists(jcd, race_num, date_str):
-    """レースが存在するか確認"""
-    url = f"https://www.boatrace.jp/owpc/pc/race/racelist?rno={race_num}&jcd={jcd}&hd={date_str}"
+    # 出走表から選手成績を取得
+    url_racelist = f"https://www.boatrace.jp/owpc/pc/race/racelist?rno={race_num}&jcd={jcd}&hd={date_str}"
     try:
-        r = requests.get(url, headers=HEADERS, timeout=5)
-        return r.status_code == 200 and "出走表" in r.text
+        r2 = requests.get(url_racelist, headers=HEADERS, timeout=10)
+        soup2 = BeautifulSoup(r2.content, "html.parser")
+
+        tbody_list2 = soup2.select("tbody.is-fs12")
+        for i, tbody in enumerate(tbody_list2[:6]):
+            if i >= len(boats):
+                break
+
+            tds = tbody.select("td")
+            all_nums = []
+            for td in tds:
+                txt = get_text(td)
+                try:
+                    all_nums.append(float(txt))
+                except:
+                    pass
+
+            # 出走表の数値列から成績を抽出
+            # 典型的な順序: 登番, 年齢, 体重, F数, L数, 平均ST,
+            # 全国勝率, 全国2連率, 全国3連率, 当地勝率, 当地2連率, 当地3連率,
+            # モーターNo, モーター2連率, モーター3連率, ボートNo, ボート2連率, ボート3連率
+            b = boats[i]
+
+            # 勝率っぽい値を探す（3.0〜9.0の範囲）
+            win_rates = [n for n in all_nums if 1.0 <= n <= 9.99]
+            two_rates = [n for n in all_nums if 0.0 <= n <= 100.0]
+
+            if len(all_nums) >= 12:
+                # 数値が十分にある場合、位置で判定
+                # F数/L数の後に平均ST、その後に勝率群が来る
+                for ni, n in enumerate(all_nums):
+                    if 3.0 <= n <= 9.0 and ni >= 3:
+                        # これが全国勝率の可能性
+                        b["national_win_rate"] = n
+                        if ni + 1 < len(all_nums):
+                            b["national_2連rate"] = all_nums[ni + 1]
+                        if ni + 2 < len(all_nums):
+                            b["national_3連rate"] = all_nums[ni + 2]
+                        if ni + 3 < len(all_nums):
+                            b["local_win_rate"] = all_nums[ni + 3]
+                        if ni + 4 < len(all_nums):
+                            b["local_2連rate"] = all_nums[ni + 4]
+                        if ni + 5 < len(all_nums):
+                            b["local_3連rate"] = all_nums[ni + 5]
+                        break
+            elif len(win_rates) >= 2:
+                b["national_win_rate"] = win_rates[0]
+                if len(win_rates) >= 3:
+                    b["local_win_rate"] = win_rates[1]
+
+            # モーター・ボート2連率
+            # 0.00〜100.00の範囲で、勝率の後に出現
+            motor_boat_rates = []
+            found_national = False
+            for n in all_nums:
+                if 3.0 <= n <= 9.0 and not found_national:
+                    found_national = True
+                    continue
+                if found_national and 0.0 <= n <= 100.0:
+                    motor_boat_rates.append(n)
+
+            b.setdefault("national_win_rate", 0)
+            b.setdefault("national_2連rate", 0)
+            b.setdefault("national_3連rate", 0)
+            b.setdefault("local_win_rate", 0)
+            b.setdefault("local_2連rate", 0)
+            b.setdefault("local_3連rate", 0)
+            b.setdefault("motor_2連rate", 0)
+            b.setdefault("motor_3連rate", 0)
+            b.setdefault("boat_2連rate", 0)
+            b.setdefault("boat_3連rate", 0)
+            b.setdefault("flying_count", 0)
+            b.setdefault("late_count", 0)
+            b.setdefault("avg_st", 0)
+            b["machine_score"] = (safe_float(b.get("motor_2連rate", 0)) + safe_float(b.get("boat_2連rate", 0))) / 2
+
     except:
-        return False
+        # 出走表取得に失敗してもデフォルト値で続行
+        for b in boats:
+            b.setdefault("national_win_rate", 0)
+            b.setdefault("national_2連rate", 0)
+            b.setdefault("national_3連rate", 0)
+            b.setdefault("local_win_rate", 0)
+            b.setdefault("local_2連rate", 0)
+            b.setdefault("local_3連rate", 0)
+            b.setdefault("motor_2連rate", 0)
+            b.setdefault("motor_3連rate", 0)
+            b.setdefault("boat_2連rate", 0)
+            b.setdefault("boat_3連rate", 0)
+            b.setdefault("flying_count", 0)
+            b.setdefault("late_count", 0)
+            b.setdefault("avg_st", 0)
+            b["machine_score"] = 0
+
+    result["boats"] = boats
+    return result
+
 
 # ============================================================
 # 予測
