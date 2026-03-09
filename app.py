@@ -948,7 +948,7 @@ st.caption(
     f"{len(lr2_features)}特徴量 | "
     f"Back-test: Top-1 11.24%, ROI 135.9% | "
     f"高信頼(8票+): Top-1 15.0%, ROI 147.8%"
-    # デバッグモード
+# デバッグモード
 st.divider()
 with st.expander("🔧 デバッグ: HTML構造確認"):
     debug_jcd = st.text_input("場コード (例: 10)", "10")
