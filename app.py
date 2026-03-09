@@ -1,1100 +1,871 @@
 import streamlit as st
+import numpy as np
+import pandas as pd
+import lightgbm as lgb
+import json, os, re
 import requests
 from bs4 import BeautifulSoup
-import numpy as np
-import json
-import re
-import os
-import time
-import datetime
-import lightgbm as lgb
 from itertools import permutations
-import pandas as pd
 import matplotlib.pyplot as plt
 import matplotlib
+matplotlib.rcParams["font.family"] = "DejaVu Sans"
 
 # ============================================================
-# 設定
+# パス設定
 # ============================================================
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 
-# v6 ペアワイズ（ペアワイズ勝率マトリクス表示用に残す）
-MODEL_V6_PATH = os.path.join(BASE_DIR, "pairwise_model_v6.txt")
-BOAT_FEATURES_V6_PATH = os.path.join(BASE_DIR, "boat_features_v6.json")
-COLUMN_MAPPING_V6_PATH = os.path.join(BASE_DIR, "column_mapping_v6.json")
+# v6 ペアワイズ（マトリクス表示用）
+MODEL_V6_PATH = os.path.join(SCRIPT_DIR, "pairwise_model_v6.txt")
+BOAT_FEATURES_V6_PATH = os.path.join(SCRIPT_DIR, "boat_features_v6.json")
+COLUMN_MAPPING_V6_PATH = os.path.join(SCRIPT_DIR, "column_mapping_v6.json")
 
-# LambdaRank v2（三連単予測のメインエンジン）
-MODEL_LR2_PATH = os.path.join(BASE_DIR, "lambdarank_model_v2.txt")
-LR2_FEATURES_PATH = os.path.join(BASE_DIR, "lambdarank_features_v2.json")
+# アンサンブルモデル（10体）
+ENSEMBLE_MODEL_PATHS = [
+    os.path.join(SCRIPT_DIR, f"ensemble_model_{i}.txt") for i in range(10)
+]
+ENSEMBLE_CONFIG_PATH = os.path.join(SCRIPT_DIR, "ensemble_config.json")
+LR2_FEATURES_PATH = os.path.join(SCRIPT_DIR, "lambdarank_features_v2.json")
 
-PLACE_STATS_PATH = os.path.join(BASE_DIR, "place_stats_v4.json")
-TEMPERATURE_PATH = os.path.join(BASE_DIR, "temperature_v6.json")
+# 共通設定
+PLACE_STATS_PATH = os.path.join(SCRIPT_DIR, "place_stats_v4.json")
+TEMPERATURE_PATH = os.path.join(SCRIPT_DIR, "temperature_v6.json")
+
+# ============================================================
+# 定数
+# ============================================================
+PLACE_MAP = {
+    "01":"桐生","02":"戸田","03":"江戸川","04":"平和島","05":"多摩川",
+    "06":"浜名湖","07":"蒲郡","08":"常滑","09":"津","10":"三国",
+    "11":"びわこ","12":"住之江","13":"尼崎","14":"鳴門","15":"丸亀",
+    "16":"児島","17":"宮島","18":"徳山","19":"下関","20":"若松",
+    "21":"芦屋","22":"福岡","23":"唐津","24":"大村"
+}
+PLACE_NAME_TO_CODE = {v: int(k) for k, v in PLACE_MAP.items()}
+WAKU_WIN_HIST = {1:55.4, 2:14.8, 3:12.1, 4:10.4, 5:5.5, 6:1.8}
+PERMS_120 = list(permutations(range(1,7), 3))
 
 HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                  "AppleWebKit/537.36 (KHTML, like Gecko) "
+                  "Chrome/120.0.0.0 Safari/537.36"
 }
 
-PLACE_MAP = {
-    "01": "桐生", "02": "戸田", "03": "江戸川", "04": "平和島",
-    "05": "多摩川", "06": "浜名湖", "07": "蒲郡", "08": "常滑",
-    "09": "津", "10": "三国", "11": "びわこ", "12": "住之江",
-    "13": "尼崎", "14": "鳴門", "15": "丸亀", "16": "児島",
-    "17": "宮島", "18": "徳山", "19": "下関", "20": "若松",
-    "21": "芦屋", "22": "福岡", "23": "唐津", "24": "大村"
+WEATHER_MAP = {"晴":0,"曇り":1,"曇":1,"雨":2,"雪":3,"霧":4}
+WIND_DIR_MAP = {
+    "北":0,"北北東":1,"北東":2,"東北東":3,"東":4,"東南東":5,
+    "南東":6,"南南東":7,"南":8,"南南西":9,"南西":10,"西南西":11,
+    "西":12,"西北西":13,"北西":14,"北北西":15,"無風":0
 }
-
+WIND_EFFECT = {
+    0:0.5,1:0.3,2:0.0,3:-0.3,4:-0.5,5:-0.3,6:0.0,7:0.3,
+    8:0.5,9:0.3,10:0.0,11:-0.3,12:-0.5,13:-0.3,14:0.0,15:0.3
+}
 
 # ============================================================
 # モデル読み込み
 # ============================================================
 @st.cache_resource
-def load_model():
-    # v6 ペアワイズ（マトリクス表示用）
+def load_models():
+    # v6 ペアワイズ
     model_v6 = lgb.Booster(model_file=MODEL_V6_PATH)
     with open(BOAT_FEATURES_V6_PATH, "r") as f:
         v6_boat_features = json.load(f)
     with open(COLUMN_MAPPING_V6_PATH, "r") as f:
-        v6_feature_names = json.load(f)
+        v6_col_map = json.load(f)
 
-    # LambdaRank v2（三連単メイン）
-    model_lr2 = lgb.Booster(model_file=MODEL_LR2_PATH)
+    # アンサンブル10モデル
+    ensemble_models = []
+    for path in ENSEMBLE_MODEL_PATHS:
+        if os.path.exists(path):
+            ensemble_models.append(lgb.Booster(model_file=path))
+    
     with open(LR2_FEATURES_PATH, "r") as f:
-        lr2_feature_names = json.load(f)
+        lr2_features = json.load(f)
 
-    try:
-        with open(PLACE_STATS_PATH, "r") as f:
-            place_stats_raw = json.load(f)
-    except Exception:
-        place_stats_raw = {}
-    try:
-        with open(TEMPERATURE_PATH, "r") as f:
-            temperature = json.load(f).get("temperature", 5.0)
-    except Exception:
-        temperature = 5.0
+    # 設定
+    with open(PLACE_STATS_PATH, "r") as f:
+        ps_raw = json.load(f)
+    place_w1 = {}
+    if "win_rate" in ps_raw:
+        for k, v in ps_raw["win_rate"].items():
+            place_w1[int(k)] = float(v)
 
-    place_stats = {}
-    if "place" in place_stats_raw and "win_rate" in place_stats_raw:
-        pid_to_name = place_stats_raw.get("place", {})
-        win_rates = place_stats_raw.get("win_rate", {})
-        for pid, pname in pid_to_name.items():
-            place_stats[pname] = {
-                "win_rate": win_rates.get(pid, 50.0) / 100.0,
-            }
+    with open(TEMPERATURE_PATH, "r") as f:
+        t_cfg = json.load(f)
+    temperature = float(t_cfg.get("temperature", t_cfg.get("T", 5.0)))
 
-    return (model_v6, v6_boat_features, v6_feature_names,
-            model_lr2, lr2_feature_names,
-            place_stats, temperature)
+    # アンサンブル設定
+    ens_config = {}
+    if os.path.exists(ENSEMBLE_CONFIG_PATH):
+        with open(ENSEMBLE_CONFIG_PATH, "r") as f:
+            ens_config = json.load(f)
 
+    return (model_v6, v6_boat_features, v6_col_map,
+            ensemble_models, lr2_features,
+            place_w1, temperature, ens_config)
 
 # ============================================================
 # スクレイピング
 # ============================================================
-def get_br_split(cell):
-    for br in cell.find_all("br"):
-        br.replace_with("|")
-    return [t.strip() for t in cell.get_text().split("|") if t.strip()]
+def get_text(el):
+    return el.get_text(strip=True) if el else ""
 
-
-def safe_float(val, default=0.0):
+def safe_float(x, default=0.0):
     try:
-        return float(val)
-    except Exception:
+        v = float(x)
+        return default if np.isnan(v) else v
+    except:
         return default
 
-
-def scrape_racelist(jcd, hd, rno):
-    url = f"https://www.boatrace.jp/owpc/pc/race/racelist?rno={rno}&jcd={jcd}&hd={hd}"
+def scrape_racelist(date_str):
+    """日付のレース一覧を取得"""
+    url = f"https://www.boatrace.jp/owpc/pc/race/index?hd={date_str}"
     try:
-        resp = requests.get(url, headers=HEADERS, timeout=15)
-        soup = BeautifulSoup(resp.content, "html.parser")
-    except Exception:
+        r = requests.get(url, headers=HEADERS, timeout=10)
+        soup = BeautifulSoup(r.content, "html.parser")
+    except:
+        return {}
+
+    venues = {}
+    # 開催場を検出
+    table = soup.select("div.table1")
+    for div in table:
+        links = div.select("a[href*='raceindex']")
+        for a in links:
+            href = a.get("href", "")
+            m = re.search(r"jcd=(\\d+)", href)
+            if m:
+                jcd = m.group(1).zfill(2)
+                name = PLACE_MAP.get(jcd, jcd)
+                venues[jcd] = name
+
+    if not venues:
+        for jcd, name in PLACE_MAP.items():
+            try:
+                check_url = f"https://www.boatrace.jp/owpc/pc/race/racelist?rno=1&jcd={jcd}&hd={date_str}"
+                cr = requests.get(check_url, headers=HEADERS, timeout=5)
+                if cr.status_code == 200 and "出走表" in cr.text:
+                    venues[jcd] = name
+            except:
+                pass
+
+    return venues
+
+def scrape_beforeinfo(jcd, race_num, date_str):
+    """直前情報をスクレイピング"""
+    url = f"https://www.boatrace.jp/owpc/pc/race/beforeinfo?rno={race_num}&jcd={jcd}&hd={date_str}"
+    try:
+        r = requests.get(url, headers=HEADERS, timeout=10)
+        soup = BeautifulSoup(r.content, "html.parser")
+    except:
         return None
 
-    tables = soup.find_all("table")
-    if len(tables) < 2:
-        return None
+    result = {
+        "weather": "", "wind_dir": "", "wind_speed": 0, "wave": 0,
+        "boats": []
+    }
 
-    rows = tables[1].find_all("tr")
+    # 天候情報
+    weather_div = soup.select_one("div.weather1")
+    if weather_div:
+        w_body = weather_div.select("div.weather1_body")
+        for wb in w_body:
+            label = get_text(wb.select_one("div.weather1_bodyUnitLabelTitle"))
+            value = get_text(wb.select_one("div.weather1_bodyUnitLabelData"))
+            if not value:
+                img = wb.select_one("img")
+                if img:
+                    alt = img.get("alt", "")
+                    value = alt
+            if "天候" in label:
+                result["weather"] = value
+            elif "風向" in label:
+                result["wind_dir"] = value
+            elif "風速" in label:
+                result["wind_speed"] = safe_float(re.sub(r"[^0-9.]", "", value))
+            elif "波高" in label:
+                result["wave"] = safe_float(re.sub(r"[^0-9.]", "", value))
+
+    # 出走表
+    racelist_url = f"https://www.boatrace.jp/owpc/pc/race/racelist?rno={race_num}&jcd={jcd}&hd={date_str}"
+    try:
+        r2 = requests.get(racelist_url, headers=HEADERS, timeout=10)
+        soup2 = BeautifulSoup(r2.content, "html.parser")
+    except:
+        soup2 = None
+
     boats = []
-
-    for row in rows:
-        cells = row.find_all(["td", "th"])
-        if len(cells) < 8:
-            continue
-        cell0_class = cells[0].get("class", [])
-        if not any("is-boatColor" in c for c in cell0_class):
-            continue
-
-        waku_text = cells[0].get_text(strip=True)
-        waku_map = {"１": 1, "２": 2, "３": 3, "４": 4, "５": 5, "６": 6,
-                    "1": 1, "2": 2, "3": 3, "4": 4, "5": 5, "6": 6}
-        waku = waku_map.get(waku_text, 0)
-        if waku == 0:
-            continue
+    rows = soup.select("tbody.is-fs12")
+    for i, row in enumerate(rows[:6]):
+        waku = i + 1
+        tds = row.select("td")
 
         boat = {"waku": waku}
 
-        racer_text = cells[2].get_text(separator="|", strip=True)
-        racer_parts = [p.strip() for p in racer_text.split("|") if p.strip()]
+        # 展示タイム
+        et_el = row.select_one("td.is-boatColor1") or (tds[4] if len(tds) > 4 else None)
+        boat["exhibition_time"] = safe_float(get_text(et_el)) if et_el else 0.0
 
-        if racer_parts:
-            boat["toban"] = safe_float(re.sub(r"\D", "", racer_parts[0]), 0)
-
-        for rp in racer_parts:
-            for g in ["A1", "A2", "B1", "B2"]:
-                if g in rp:
-                    boat["grade"] = g
-                    break
-
-        for rp in racer_parts:
-            cleaned = rp.replace("\u3000", "").replace(" ", "").strip()
-            if re.match(r"^[\u3040-\u9fff]+$", cleaned) and len(cleaned) >= 2:
-                boat["name"] = rp.replace("\u3000", " ").strip()
+        # スタート展示
+        spans = row.select("span")
+        for sp in spans:
+            txt = get_text(sp)
+            if txt.startswith("F") or txt.startswith(".") or txt.startswith("L"):
+                boat["start_timing"] = safe_float(txt.replace("F", "-").replace("L", "0."))
                 break
-
-        for rp in racer_parts:
-            age_m = re.search(r"(\d+)歳", rp)
-            if age_m:
-                boat["age"] = int(age_m.group(1))
-            wt_m = re.search(r"([\d.]+)kg", rp)
-            if wt_m:
-                boat["weight"] = float(wt_m.group(1))
-
-        fl_parts = get_br_split(cells[3])
-        for p in fl_parts:
-            try:
-                val = float(p)
-                if 0 <= val <= 1.0:
-                    boat["avg_st"] = val
-            except Exception:
-                pass
-
-        nat = get_br_split(cells[4])
-        if len(nat) >= 1: boat["national_win_rate"] = safe_float(nat[0])
-        if len(nat) >= 2: boat["national_2rate"] = safe_float(nat[1])
-        if len(nat) >= 3: boat["national_3rate"] = safe_float(nat[2])
-
-        loc = get_br_split(cells[5])
-        if len(loc) >= 1: boat["local_win_rate"] = safe_float(loc[0])
-        if len(loc) >= 2: boat["local_2rate"] = safe_float(loc[1])
-        if len(loc) >= 3: boat["local_3rate"] = safe_float(loc[2])
-
-        mot = get_br_split(cells[6])
-        if len(mot) >= 1: boat["motor_no"] = safe_float(mot[0])
-        if len(mot) >= 2: boat["motor_2rate"] = safe_float(mot[1])
-        if len(mot) >= 3: boat["motor_3rate"] = safe_float(mot[2])
-
-        bot = get_br_split(cells[7])
-        if len(bot) >= 1: boat["boat_no"] = safe_float(bot[0])
-        if len(bot) >= 2: boat["boat_2rate"] = safe_float(bot[1])
-        if len(bot) >= 3: boat["boat_3rate"] = safe_float(bot[2])
-
-        boat.setdefault("grade", "B1")
-        boat.setdefault("name", f"枠{waku}")
-        boat.setdefault("age", 35)
-        boat.setdefault("weight", 52.0)
-        boat.setdefault("national_win_rate", 4.0)
-        boat.setdefault("national_2rate", 20.0)
-        boat.setdefault("national_3rate", 30.0)
-        boat.setdefault("local_win_rate", 4.0)
-        boat.setdefault("local_2rate", 20.0)
-        boat.setdefault("local_3rate", 30.0)
-        boat.setdefault("motor_2rate", 30.0)
-        boat.setdefault("motor_3rate", 40.0)
-        boat.setdefault("boat_2rate", 30.0)
-        boat.setdefault("boat_3rate", 40.0)
-        boat.setdefault("avg_st", 0.15)
+        if "start_timing" not in boat:
+            boat["start_timing"] = 0.0
 
         boats.append(boat)
 
-    return boats if len(boats) == 6 else None
-
-
-def scrape_beforeinfo(jcd, hd, rno):
-    url = f"https://www.boatrace.jp/owpc/pc/race/beforeinfo?rno={rno}&jcd={jcd}&hd={hd}"
-    try:
-        resp = requests.get(url, headers=HEADERS, timeout=15)
-        soup = BeautifulSoup(resp.content, "html.parser")
-    except Exception:
-        return None
-
-    tables = soup.find_all("table")
-    if len(tables) < 2:
-        return None
-
-    checks = {
-        "exhibition_time": [],
-        "entry_course": False,
-        "exhibition_st": [],
-        "wind": False,
-    }
-
-    info = {}
-    for row in tables[1].find_all("tr"):
-        cells = row.find_all(["td", "th"])
-        if len(cells) < 8:
-            continue
-        cell0_class = cells[0].get("class", [])
-        if not any("is-boatColor" in c for c in cell0_class):
-            continue
-        waku_text = cells[0].get_text(strip=True)
-        try:
-            waku = int(waku_text)
-        except ValueError:
-            continue
-        if waku < 1 or waku > 6:
-            continue
-        ex_time = safe_float(cells[4].get_text(strip=True), 0)
-        if 6.0 <= ex_time <= 7.5:
-            info[waku] = {"exhibition_time": ex_time}
-            checks["exhibition_time"].append(waku)
-        else:
-            info[waku] = {"exhibition_time": 6.80}
-
-    boat_images = soup.find_all("div", class_="table1_boatImage1")
+    # 進入コース
+    course_div = soup.select_one("div.table1[class*='startCourse']")
+    if not course_div:
+        course_div = soup.select_one("div.startCourse")
+    
     entry_courses = {}
-    exhibition_sts = {}
-
-    for course_pos, div in enumerate(boat_images, 1):
-        num_span = div.find("span", class_="table1_boatImage1Number")
-        waku = None
-        if num_span:
-            try:
-                waku = int(num_span.get_text(strip=True))
-                entry_courses[waku] = course_pos
-            except ValueError:
-                continue
-
-        time_span = div.find("span", class_="table1_boatImage1Time")
-        if time_span and waku:
-            st_text = time_span.get_text(strip=True)
-            if st_text:
-                is_flying = "F" in st_text
-                num_part = st_text.replace("F", "").strip()
+    if course_div:
+        course_spans = course_div.select("span")
+        for ci, sp in enumerate(course_spans[:6]):
+            txt = get_text(sp)
+            w = safe_float(txt)
+            if 1 <= w <= 6:
+                entry_courses[ci+1] = int(w)
+    
+    # 出走表から選手情報
+    racer_info = {}
+    if soup2:
+        r_rows = soup2.select("tbody.is-fs12")
+        for i, rr in enumerate(r_rows[:6]):
+            w = i + 1
+            info = {}
+            tds = rr.select("td")
+            
+            # 各種勝率
+            rate_cells = rr.select("td")
+            nums = []
+            for td in rate_cells:
+                txt = get_text(td)
                 try:
-                    if num_part.startswith("."):
-                        st_val = float("0" + num_part)
-                    else:
-                        st_val = float(num_part)
-                    if is_flying:
-                        st_val = -st_val
-                    exhibition_sts[waku] = st_val
-                    checks["exhibition_st"].append(waku)
-                except ValueError:
+                    nums.append(float(txt))
+                except:
                     pass
+            
+            racer_info[w] = nums
 
-    if len(entry_courses) == 6:
-        checks["entry_course"] = True
-
-    wind_info = {"wind_speed": 3, "wave": 3, "wind_dir_num": 0, "weather_num": 1,
-                 "weather_name": "不明", "wind_dir_name": "不明"}
-
-    weather_body = soup.find("div", class_="weather1Body")
-    if weather_body:
-        weather_text = weather_body.get_text()
-        ws_m = re.search(r"風速\s*(\d+)\s*m", weather_text)
-        if ws_m:
-            wind_info["wind_speed"] = int(ws_m.group(1))
-            checks["wind"] = True
-        wv_m = re.search(r"波高\s*(\d+)\s*cm", weather_text)
-        if wv_m:
-            wind_info["wave"] = int(wv_m.group(1))
-        weather_map = {"晴": 1, "曇り": 2, "曇": 2, "雨": 3, "雪": 4, "霧": 5}
-        for wn, wv in weather_map.items():
-            if wn in weather_text:
-                wind_info["weather_num"] = wv
-                wind_info["weather_name"] = wn
-                break
-
-    if not checks["wind"]:
-        all_spans = soup.find_all("span")
-        for span in all_spans:
-            txt = span.get_text(strip=True)
-            m = re.match(r"^(\d+)m$", txt)
-            if m:
-                val = int(m.group(1))
-                if 0 <= val <= 20:
-                    wind_info["wind_speed"] = val
-                    checks["wind"] = True
-                    break
-        for span in all_spans:
-            txt = span.get_text(strip=True)
-            m = re.match(r"^(\d+)cm$", txt)
-            if m:
-                val = int(m.group(1))
-                if 0 <= val <= 30:
-                    wind_info["wave"] = val
-                    break
-
-    weather_span = soup.find("span", class_=re.compile(r"is-weather"))
-    if weather_span:
-        w_cls = " ".join(weather_span.get("class", []))
-        if "is-weather1" in w_cls:
-            wind_info["weather_num"] = 1; wind_info["weather_name"] = "晴"
-        elif "is-weather2" in w_cls:
-            wind_info["weather_num"] = 2; wind_info["weather_name"] = "曇"
-        elif "is-weather3" in w_cls:
-            wind_info["weather_num"] = 3; wind_info["weather_name"] = "雨"
-
-    wind_dirs = {
-        "北北東": 1, "北北西": 15, "北東": 2, "北西": 14, "北": 0,
-        "東北東": 3, "東南東": 5, "南南東": 7, "南南西": 9,
-        "西南西": 11, "西北西": 13, "南東": 6, "南西": 10,
-        "東": 4, "南": 8, "西": 12,
-    }
-    wind_div = soup.find("div", class_=re.compile(r"is-wind"))
-    if wind_div:
-        w_cls = " ".join(wind_div.get("class", []))
-        m = re.search(r"is-wind(\d+)", w_cls)
-        if m:
-            wind_info["wind_dir_num"] = int(m.group(1))
-
-    body_text = soup.get_text()
-    for wd_name, wd_num in sorted(wind_dirs.items(), key=lambda x: -len(x[0])):
-        if wd_name in body_text:
-            wind_info["wind_dir_name"] = wd_name
-            if wind_info["wind_dir_num"] == 0:
-                wind_info["wind_dir_num"] = wd_num
-            checks["wind"] = True
-            break
-
-    for waku in range(1, 7):
-        if waku not in info:
-            info[waku] = {"exhibition_time": 6.80}
-        if waku in entry_courses:
-            info[waku]["entry_course"] = entry_courses[waku]
-        else:
-            info[waku]["entry_course"] = waku
-        if waku in exhibition_sts:
-            info[waku]["exhibition_st"] = exhibition_sts[waku]
-        else:
-            info[waku]["exhibition_st"] = 0.15
-
-    info["_wind"] = wind_info
-    info["_checks"] = checks
-    return info
-
-
-def check_venue_open(jcd, hd):
-    url = f"https://www.boatrace.jp/owpc/pc/race/racelist?rno=1&jcd={jcd}&hd={hd}"
-    try:
-        resp = requests.get(url, headers=HEADERS, timeout=10)
-        if resp.status_code == 200:
-            soup = BeautifulSoup(resp.content, "html.parser")
-            if len(soup.find_all("table")) >= 2:
-                return True
-    except Exception:
-        pass
-    return False
-
-
-# ============================================================
-# 予測エンジン（LambdaRank v2 + v6ペアワイズ併用）
-# ============================================================
-def predict_race(jcd, hd, rno, model_v6, v6_boat_features, v6_feature_names,
-                 model_lr2, lr2_feature_names,
-                 place_stats, temperature):
-    racelist = scrape_racelist(jcd, hd, rno)
-    if racelist is None:
-        return None
-
-    beforeinfo = scrape_beforeinfo(jcd, hd, rno)
-    if beforeinfo is None:
-        beforeinfo = {
-            w: {"exhibition_time": 6.80, "entry_course": w, "exhibition_st": 0.15}
-            for w in range(1, 7)
-        }
-        beforeinfo["_wind"] = {"wind_speed": 3, "wave": 3,
-                                "wind_dir_num": 0, "weather_num": 1,
-                                "weather_name": "不明", "wind_dir_name": "不明"}
-        beforeinfo["_checks"] = {"exhibition_time": [], "entry_course": False,
-                                  "exhibition_st": [], "wind": False}
-
-    place_name = PLACE_MAP.get(jcd, "")
-    wind = beforeinfo.get("_wind", {"wind_speed": 3, "wave": 3,
-                                     "wind_dir_num": 0, "weather_num": 1})
-    checks = beforeinfo.get("_checks", {})
-
-    ws = wind.get("wind_speed", 3)
-    wd = wind.get("wind_dir_num", 0)
-    is_strong = 1 if ws >= 5 else 0
-    if wd in [8, 9, 10]:
-        wind_effect = ws
-    elif wd in [0, 1, 15]:
-        wind_effect = -ws
-    else:
-        wind_effect = 0
-
-    place_1_winrate = place_stats.get(place_name, {}).get("win_rate", 0.50)
-
-    # データ取得チェック
-    data_checks = []
-    names_ok = sum(1 for b in racelist if not b.get("name", "").startswith("枠"))
-    data_checks.append(("選手名", f"{names_ok}/6",
-                        "OK" if names_ok == 6 else "一部欠損"))
-    rates_ok = sum(1 for b in racelist if b.get("national_win_rate", 4.0) != 4.0)
-    data_checks.append(("全国勝率", f"{rates_ok}/6",
-                        "OK" if rates_ok >= 5 else "一部欠損"))
-    ages_ok = sum(1 for b in racelist if b.get("age", 35) != 35)
-    data_checks.append(("年齢/体重", f"{ages_ok}/6",
-                        "OK" if ages_ok >= 5 else "一部欠損"))
-    et_ok = len(checks.get("exhibition_time", []))
-    data_checks.append(("展示タイム", f"{et_ok}/6",
-                        "OK" if et_ok == 6 else "一部欠損"))
-    ec_ok = checks.get("entry_course", False)
-    data_checks.append(("進入コース", "6/6" if ec_ok else "0/6",
-                        "OK" if ec_ok else "未取得（枠順で代用）"))
-    es_ok = len(checks.get("exhibition_st", []))
-    data_checks.append(("展示ST", f"{es_ok}/6",
-                        "OK" if es_ok >= 4 else "一部欠損"))
-    wd_ok = checks.get("wind", False)
-    data_checks.append(("風/天候", "あり" if wd_ok else "デフォルト",
-                        "OK" if wd_ok else "未取得"))
-    data_checks.append(("場の統計", "あり" if place_name in place_stats else "なし",
-                        "OK" if place_name in place_stats else "デフォルト"))
-
-    # --- 各艇の特徴量構築 ---
-    waku_base_rates = {
-        1: place_1_winrate,
-        2: (1 - place_1_winrate) * 0.22,
-        3: (1 - place_1_winrate) * 0.20,
-        4: (1 - place_1_winrate) * 0.22,
-        5: (1 - place_1_winrate) * 0.19,
-        6: (1 - place_1_winrate) * 0.17,
-    }
-
-    boat_data = []
-    for b in racelist:
+    # ボート情報組み立て
+    for b in boats:
         w = b["waku"]
-        bi = beforeinfo.get(w, {"exhibition_time": 6.80, "entry_course": w,
-                                 "exhibition_st": 0.15})
-        grade_num = {"A1": 4, "A2": 3, "B1": 2, "B2": 1}.get(b.get("grade", "B1"), 2)
-        machine_score = (b.get("motor_2rate", 30) + b.get("boat_2rate", 30)) / 2
-        pw_win = waku_base_rates.get(w, 0.15)
+        if w in entry_courses:
+            b["entry_course"] = entry_courses[w]
+        else:
+            b["entry_course"] = w
+        b["course_diff"] = b["entry_course"] - w
 
-        features = {
-            "waku": w,
-            "grade_num": grade_num,
-            "age": b.get("age", 35),
-            "weight": b.get("weight", 52.0),
-            "national_win_rate": b.get("national_win_rate", 4.0),
-            "national_2rate": b.get("national_2rate", 20.0),
-            "local_win_rate": b.get("local_win_rate", 4.0),
-            "local_2rate": b.get("local_2rate", 20.0),
-            "motor_2rate": b.get("motor_2rate", 30.0),
-            "boat_2rate": b.get("boat_2rate", 30.0),
-            "machine_score": machine_score,
-            "exhibition_time": bi.get("exhibition_time", 6.80),
-            "entry_course": bi.get("entry_course", w),
-            "avg_st": b.get("avg_st", 0.15),
-            "weather_num": wind.get("weather_num", 1),
-            "wind_dir_num": wd,
-            "wind_speed": ws,
-            "wave": wind.get("wave", 3),
-            "wind_effect": wind_effect,
-            "is_strong_wind": is_strong,
-            "place_w1_winrate": place_1_winrate,
-            "place_upset_rate": 1.0 - place_1_winrate,
-            "place_waku_win_rate": pw_win,
-            "place_waku_top3_rate": min(pw_win * 2.5, 0.80),
-            "place_in_win_rate": pw_win * 1.1 if w <= 2 else pw_win * 0.9,
-            "waku_win_hist": {1:0.55,2:0.14,3:0.12,4:0.10,5:0.06,6:0.03}.get(w, 0.1),
-            # v6互換
-            "racer_avg_st_20": b.get("avg_st", 0.15),
-            "racer_avg_st_10": b.get("avg_st", 0.15),
-            "is_waku1": 1 if w == 1 else 0,
-            "is_waku2": 1 if w == 2 else 0,
-            "is_waku3": 1 if w == 3 else 0,
-            "place_waku_advantage": place_1_winrate - 0.50 if w == 1 else (0.50 - place_1_winrate) / 5,
-        }
-        features["_name"] = b.get("name", f"枠{w}")
-        features["_grade"] = b.get("grade", "B1")
-        features["_exhibition_st"] = bi.get("exhibition_st", 0.15)
-        boat_data.append(features)
+    result["boats"] = boats
+    result["racer_info"] = racer_info
 
-    if len(boat_data) != 6:
+    # 出走表の詳細データ取得
+    detail_boats = scrape_racelist_detail(jcd, race_num, date_str)
+    if detail_boats:
+        for db in detail_boats:
+            w = db["waku"]
+            for b in boats:
+                if b["waku"] == w:
+                    b.update(db)
+                    break
+
+    result["boats"] = boats
+    return result
+
+def scrape_racelist_detail(jcd, race_num, date_str):
+    """出走表から選手成績を取得"""
+    url = f"https://www.boatrace.jp/owpc/pc/race/racelist?rno={race_num}&jcd={jcd}&hd={date_str}"
+    try:
+        r = requests.get(url, headers=HEADERS, timeout=10)
+        soup = BeautifulSoup(r.content, "html.parser")
+    except:
         return None
 
-    # --- レース内相対特徴量（LR2用） ---
-    nwr_vals = [bd["national_win_rate"] for bd in boat_data]
-    m2r_vals = [bd["motor_2rate"] for bd in boat_data]
-    et_vals = [bd["exhibition_time"] for bd in boat_data]
-    gn_vals = [bd["grade_num"] for bd in boat_data]
-    ms_vals = [bd["machine_score"] for bd in boat_data]
+    boats = []
+    rows = soup.select("tbody.is-fs12")
+    for i, row in enumerate(rows[:6]):
+        waku = i + 1
+        b = {"waku": waku}
 
-    def z_score(vals):
-        m = np.mean(vals); s = np.std(vals) + 1e-8
-        return [(v - m) / s for v in vals]
+        tds = row.select("td")
+        nums = []
+        for td in tds:
+            txt = get_text(td)
+            txt_clean = txt.replace("R", "").replace("F", "").replace("L", "").strip()
+            try:
+                nums.append(float(txt_clean))
+            except:
+                pass
 
-    def ranks_desc(vals):
-        indexed = sorted(enumerate(vals), key=lambda x: -x[1])
-        ranks = [0] * len(vals)
-        for rank, (idx, _) in enumerate(indexed, 1):
-            ranks[idx] = rank
-        return ranks
+        # 一般的な出走表の列順:
+        # 枠, 登番, 選手名, 年齢, 支部, 体重, 級別, 全国勝率, 全国2連率, 当地勝率, 当地2連率,
+        # モーターNo, モーター2連率, ボートNo, ボート2連率
+        if len(nums) >= 10:
+            b["national_win_rate"] = nums[0] if len(nums) > 0 else 0
+            b["national_2連rate"] = nums[1] if len(nums) > 1 else 0
+            b["local_win_rate"] = nums[2] if len(nums) > 2 else 0
+            b["local_2連rate"] = nums[3] if len(nums) > 3 else 0
+            b["motor_2連rate"] = nums[5] if len(nums) > 5 else 0
+            b["boat_2連rate"] = nums[7] if len(nums) > 7 else 0
+        elif len(nums) >= 6:
+            b["national_win_rate"] = nums[0]
+            b["national_2連rate"] = nums[1]
+            b["local_win_rate"] = nums[2]
+            b["local_2連rate"] = nums[3]
+            b["motor_2連rate"] = nums[4]
+            b["boat_2連rate"] = nums[5]
+        else:
+            b["national_win_rate"] = 0
+            b["national_2連rate"] = 0
+            b["local_win_rate"] = 0
+            b["local_2連rate"] = 0
+            b["motor_2連rate"] = 0
+            b["boat_2連rate"] = 0
 
-    nwr_z = z_score(nwr_vals)
-    m2r_z = z_score(m2r_vals)
-    et_z = z_score(et_vals)
-    gn_z = z_score(gn_vals)
-    nwr_rank = ranks_desc(nwr_vals)
-    m2r_rank = ranks_desc(m2r_vals)
-    et_rank = ranks_desc(et_vals)
-    gn_rank = ranks_desc(gn_vals)
+        # グレード判定
+        grade_el = row.select_one("td.is-gradeColor")
+        grade_txt = get_text(grade_el) if grade_el else ""
+        grade_map_local = {"A1":3, "A2":2, "B1":1, "B2":0}
+        b["racer_grade"] = grade_txt
 
-    # 1号艇データ
-    w1_data = boat_data[0]
-    et_mean = np.mean(et_vals)
-    et_best = np.min(et_vals)
+        b["national_3連rate"] = 0.0
+        b["local_3連rate"] = 0.0
+        b["motor_3連rate"] = 0.0
+        b["boat_3連rate"] = 0.0
+        b["flying_count"] = 0.0
+        b["late_count"] = 0.0
+        b["avg_st"] = 0.0
+        b["machine_score"] = (b.get("motor_2連rate",0) + b.get("boat_2連rate",0)) / 2
 
-    for i, bd in enumerate(boat_data):
-        bd["national_win_rate_z"] = nwr_z[i]
-        bd["motor_2rate_z"] = m2r_z[i]
-        bd["exhibition_time_z"] = et_z[i]
-        bd["grade_num_z"] = gn_z[i]
-        bd["national_win_rate_race_rank"] = nwr_rank[i]
-        bd["motor_2rate_race_rank"] = m2r_rank[i]
-        bd["exhibition_time_race_rank"] = et_rank[i]
-        bd["grade_num_race_rank"] = gn_rank[i]
-        bd["diff_w1_national_win_rate"] = bd["national_win_rate"] - w1_data["national_win_rate"]
-        bd["diff_w1_motor_2rate"] = bd["motor_2rate"] - w1_data["motor_2rate"]
-        bd["diff_w1_exhibition_time"] = bd["exhibition_time"] - w1_data["exhibition_time"]
-        bd["diff_w1_grade_num"] = bd["grade_num"] - w1_data["grade_num"]
-        bd["diff_w1_machine_score"] = bd["machine_score"] - w1_data["machine_score"]
-        bd["et_diff_mean"] = bd["exhibition_time"] - et_mean
-        bd["et_diff_best"] = bd["exhibition_time"] - et_best
-        bd["race_national_win_rate_mean"] = np.mean(nwr_vals)
-        bd["race_national_win_rate_std"] = np.std(nwr_vals)
-        bd["race_motor_2rate_mean"] = np.mean(m2r_vals)
-        bd["race_motor_2rate_std"] = np.std(m2r_vals)
-        bd["race_grade_num_mean"] = np.mean(gn_vals)
-        bd["race_grade_num_std"] = np.std(gn_vals)
+        boats.append(b)
 
-    # ==========================================
-    # v6 ペアワイズ予測（マトリクス表示 + LR2特徴量用）
-    # ==========================================
-    pair_features_list = []
-    pair_ij = []
+    return boats
+
+def check_race_exists(jcd, race_num, date_str):
+    """レースが存在するか確認"""
+    url = f"https://www.boatrace.jp/owpc/pc/race/racelist?rno={race_num}&jcd={jcd}&hd={date_str}"
+    try:
+        r = requests.get(url, headers=HEADERS, timeout=5)
+        return r.status_code == 200 and "出走表" in r.text
+    except:
+        return False
+
+# ============================================================
+# 予測
+# ============================================================
+def predict_race(boats_data, jcd_code, model_v6, v6_boat_features, 
+                 ensemble_models, lr2_features, place_w1, temperature):
+    """10モデルアンサンブル予測"""
+    jcd = int(jcd_code)
+    n_feat = len(lr2_features)
+    boats = boats_data["boats"]
+    
+    if len(boats) < 6:
+        return None
+
+    # 天候特徴量
+    weather_val = WEATHER_MAP.get(boats_data.get("weather", ""), 0)
+    wind_dir_str = boats_data.get("wind_dir", "")
+    wind_dir_val = WIND_DIR_MAP.get(wind_dir_str, 0)
+    wind_speed = safe_float(boats_data.get("wind_speed", 0))
+    wind_eff = WIND_EFFECT.get(wind_dir_val, 0) * wind_speed
+
+    pw1 = place_w1.get(jcd, 55.0)
+
+    # 各艇の基本特徴量
+    for b in boats:
+        b.setdefault("jcd", jcd)
+        b.setdefault("grade", 0)
+        b.setdefault("weather", weather_val)
+        b.setdefault("wind_dir", wind_dir_val)
+        b.setdefault("wind_speed", wind_speed)
+        b.setdefault("wind_effect", wind_eff)
+        b.setdefault("place_w1_winrate", pw1)
+        b.setdefault("waku_win_hist", WAKU_WIN_HIST.get(b["waku"], 5.0))
+        b.setdefault("national_win_rate", 0)
+        b.setdefault("national_2連rate", 0)
+        b.setdefault("national_3連rate", 0)
+        b.setdefault("local_win_rate", 0)
+        b.setdefault("local_2連rate", 0)
+        b.setdefault("local_3連rate", 0)
+        b.setdefault("motor_2連rate", 0)
+        b.setdefault("motor_3連rate", 0)
+        b.setdefault("boat_2連rate", 0)
+        b.setdefault("boat_3連rate", 0)
+        b.setdefault("exhibition_time", 0)
+        b.setdefault("start_timing", 0)
+        b.setdefault("avg_st", 0)
+        b.setdefault("entry_course", b["waku"])
+        b.setdefault("course_diff", 0)
+        b.setdefault("flying_count", 0)
+        b.setdefault("late_count", 0)
+        b.setdefault("machine_score", (b.get("motor_2連rate",0)+b.get("boat_2連rate",0))/2)
+
+    # 相対特徴量
+    stats_keys = ["national_win_rate","national_2連rate",
+                  "local_win_rate","motor_2連rate",
+                  "exhibition_time","avg_st","machine_score"]
+    vals = {k: np.array([b[k] for b in boats]) for k in stats_keys}
+    means = {k: np.mean(v) for k, v in vals.items()}
+    stds = {k: max(np.std(v), 1e-6) for k, v in vals.items()}
+
+    for i, b in enumerate(boats):
+        for k in stats_keys:
+            b[f"{k}_z"] = (b[k] - means[k]) / stds[k]
+            b[f"{k}_rank"] = float(np.argsort(np.argsort(-vals[k]))[i] + 1)
+        b["diff_w1_national_win_rate"] = b["national_win_rate"] - boats[0]["national_win_rate"]
+        b["diff_w1_exhibition_time"] = b["exhibition_time"] - boats[0]["exhibition_time"]
+        b["diff_w1_motor_2連rate"] = b["motor_2連rate"] - boats[0]["motor_2連rate"]
+        b["diff_w1_machine_score"] = b["machine_score"] - boats[0]["machine_score"]
+        b["et_diff_mean"] = b["exhibition_time"] - means["exhibition_time"]
+        b["et_diff_best"] = b["exhibition_time"] - min(vals["exhibition_time"])
+
+    # v6スコア計算
+    v6_n_feat = model_v6.num_feature()
+    raw_feats = []
+    for b in boats:
+        vec = [b.get(f, 0.0) for f in v6_boat_features]
+        raw_feats.append(vec)
+
+    pair_rows = []
     for i in range(6):
         for j in range(6):
-            if i == j:
-                continue
-            pair_feat = {}
-            for fn in v6_feature_names:
-                if fn.startswith("i_"):
-                    base = fn[2:]
-                    pair_feat[fn] = boat_data[i].get(base, 0)
-                elif fn.startswith("j_"):
-                    base = fn[2:]
-                    pair_feat[fn] = boat_data[j].get(base, 0)
-                elif fn.endswith("_diff"):
-                    base = fn.replace("_diff", "")
-                    pair_feat[fn] = boat_data[i].get(base, 0) - boat_data[j].get(base, 0)
-                elif fn.endswith("_ratio"):
-                    base = fn.replace("_ratio", "")
-                    jv = boat_data[j].get(base, 1)
-                    if jv == 0: jv = 0.001
-                    pair_feat[fn] = boat_data[i].get(base, 0) / jv
-                else:
-                    pair_feat[fn] = boat_data[i].get(fn, 0)
-            pair_features_list.append(pair_feat)
-            pair_ij.append((i, j))
+            if i == j: continue
+            row = list(raw_feats[i]) + list(raw_feats[j])
+            row += [raw_feats[i][k]-raw_feats[j][k] for k in range(len(v6_boat_features))]
+            row += [i+1, j+1, (i+1)*(j+1), abs(i-j)]
+            pair_rows.append(row)
 
-    X_v6 = np.zeros((len(pair_features_list), len(v6_feature_names)))
-    for k, pf in enumerate(pair_features_list):
-        for fi, fn in enumerate(v6_feature_names):
-            X_v6[k, fi] = pf.get(fn, 0)
+    X_pair = np.array(pair_rows, dtype=np.float32)
+    if X_pair.shape[1] < v6_n_feat:
+        X_pair = np.hstack([X_pair, np.zeros((X_pair.shape[0], v6_n_feat-X_pair.shape[1]), dtype=np.float32)])
+    elif X_pair.shape[1] > v6_n_feat:
+        X_pair = X_pair[:, :v6_n_feat]
 
-    v6_preds = model_v6.predict(X_v6)
+    raw_pred = model_v6.predict(X_pair)
+    sig = 1.0 / (1.0 + np.exp(-raw_pred / temperature))
 
     # ペアワイズ勝率マトリクス
-    pairwise_prob = np.zeros((6, 6))
+    pw_matrix = np.zeros((6, 6))
+    win_scores = np.zeros(6)
+    idx = 0
     for i in range(6):
         for j in range(6):
-            if i == j:
-                pairwise_prob[i][j] = 0.5
-    for k, (i, j) in enumerate(pair_ij):
-        pairwise_prob[i][j] = 1.0 / (1.0 + np.exp(-v6_preds[k]))
+            if i == j: continue
+            pw_matrix[i][j] = sig[idx]
+            win_scores[i] += sig[idx]
+            idx += 1
+    total = win_scores.sum()
+    if total > 0:
+        win_scores /= total
 
-    # v6 スコア集計（LR2の特徴量として使用）
-    v6_scores = np.zeros(6)
-    for k, (i, j) in enumerate(pair_ij):
-        v6_scores[i] += 1.0 / (1.0 + np.exp(-v6_preds[k]))
-    v6_top1_idx = np.argmax(v6_scores)
+    for i, b in enumerate(boats):
+        b["v6_score"] = win_scores[i]
 
-    # v6の温度スケーリング勝率（表示用）
-    scaled = v6_scores / temperature
-    exp_s = np.exp(scaled - np.max(scaled))
-    v6_win_probs = exp_s / exp_s.sum()
-
-    # ==========================================
-    # LambdaRank v2 三連単予測
-    # ==========================================
-    lr_boat_feats = [
-        "waku","grade_num","age","weight",
-        "national_win_rate","national_2rate","local_win_rate","local_2rate",
-        "motor_2rate","boat_2rate","machine_score",
-        "exhibition_time","entry_course","avg_st",
-        "weather_num","wind_dir_num","wind_speed","wave","wind_effect","is_strong_wind",
-        "place_w1_winrate","place_upset_rate","place_waku_win_rate",
-        "place_waku_top3_rate","place_in_win_rate","waku_win_hist",
-        "national_win_rate_z","motor_2rate_z","exhibition_time_z","grade_num_z",
-        "national_win_rate_race_rank","motor_2rate_race_rank",
-        "exhibition_time_race_rank","grade_num_race_rank",
-        "diff_w1_national_win_rate","diff_w1_motor_2rate",
-        "diff_w1_exhibition_time","diff_w1_grade_num","diff_w1_machine_score",
+    # 120通り候補の特徴量構築
+    boat_keys = [
+        "waku","national_win_rate","national_2連rate","national_3連rate",
+        "local_win_rate","motor_2連rate","motor_3連rate","exhibition_time",
+        "start_timing","avg_st","entry_course","course_diff","machine_score",
+        "flying_count","late_count","waku_win_hist",
+        "national_win_rate_z","national_win_rate_rank",
+        "national_2連rate_z",
+        "motor_2連rate_z","motor_2連rate_z",
+        "exhibition_time_z","exhibition_time_rank",
+        "machine_score_z","machine_score_rank",
+        "diff_w1_national_win_rate","diff_w1_exhibition_time",
+        "diff_w1_motor_2連rate","diff_w1_machine_score",
         "et_diff_mean","et_diff_best",
-        "race_national_win_rate_mean","race_national_win_rate_std",
-        "race_motor_2rate_mean","race_motor_2rate_std",
-        "race_grade_num_mean","race_grade_num_std",
+        "v6_score"
     ]
-    diff_feats = ["national_win_rate","motor_2rate","exhibition_time",
-                  "grade_num","machine_score","entry_course"]
-    trio_feats = ["national_win_rate","motor_2rate","grade_num","machine_score"]
 
-    n_lr2_feat = len(lr2_feature_names)
-    wakus = [bd["waku"] for bd in boat_data]
-    all_perms = list(permutations(range(6), 3))
+    X_candidates = []
+    for perm in PERMS_120:
+        i1, i2, i3 = perm[0]-1, perm[1]-1, perm[2]-1
+        b1, b2, b3 = boats[i1], boats[i2], boats[i3]
 
-    X_lr2 = np.zeros((120, n_lr2_feat), dtype=np.float32)
-
-    for pi, perm in enumerate(all_perms):
-        i1, i2, i3 = perm
-        b1, b2, b3 = boat_data[i1], boat_data[i2], boat_data[i3]
-        idx = 0
-
+        vec = []
         for b in [b1, b2, b3]:
-            for f in lr_boat_feats:
-                X_lr2[pi, idx] = b.get(f, 0)
-                idx += 1
+            for k in boat_keys:
+                vec.append(b.get(k, 0.0))
 
-        for f in diff_feats:
-            X_lr2[pi, idx] = b1.get(f, 0) - b2.get(f, 0); idx += 1
-            X_lr2[pi, idx] = b1.get(f, 0) - b3.get(f, 0); idx += 1
-            X_lr2[pi, idx] = b2.get(f, 0) - b3.get(f, 0); idx += 1
+        diff_keys = ["national_win_rate","exhibition_time","motor_2連rate",
+                     "machine_score","v6_score","entry_course"]
+        for k in diff_keys:
+            vec.append(b1.get(k,0)-b2.get(k,0))
+            vec.append(b1.get(k,0)-b3.get(k,0))
+            vec.append(b2.get(k,0)-b3.get(k,0))
 
-        for f in trio_feats:
-            vs = [b1.get(f, 0), b2.get(f, 0), b3.get(f, 0)]
-            X_lr2[pi, idx] = np.mean(vs); idx += 1
-            X_lr2[pi, idx] = np.std(vs); idx += 1
-            X_lr2[pi, idx] = np.min(vs); idx += 1
-            X_lr2[pi, idx] = np.max(vs); idx += 1
+        trio_keys = ["national_win_rate","motor_2連rate","exhibition_time",
+                     "machine_score","v6_score"]
+        for k in trio_keys:
+            vs = [b1.get(k,0), b2.get(k,0), b3.get(k,0)]
+            vec += [np.mean(vs), np.std(vs), max(vs)-min(vs), min(vs)]
 
-        w1, w2, w3 = wakus[i1], wakus[i2], wakus[i3]
-        X_lr2[pi, idx] = w1 + w2 + w3; idx += 1
-        X_lr2[pi, idx] = w1 * w2 * w3; idx += 1
-        X_lr2[pi, idx] = 1 if w1 == 1 else 0; idx += 1
+        vec.append(perm[0]*100+perm[1]*10+perm[2])
+        vec.append(perm[0])
+        vec.append(perm[1])
+        vec.append(perm[2])
+        vec.append(perm[0]*perm[1]*perm[2])
 
-        X_lr2[pi, idx] = v6_scores[i1]; idx += 1
-        X_lr2[pi, idx] = v6_scores[i2]; idx += 1
-        X_lr2[pi, idx] = v6_scores[i3]; idx += 1
-        X_lr2[pi, idx] = v6_scores[i1] - v6_scores[i2]; idx += 1
-        X_lr2[pi, idx] = 1 if i1 == v6_top1_idx else 0; idx += 1
+        vec += [jcd, 0, weather_val, wind_speed, wind_eff, pw1]
+        vec += [b1["v6_score"]+b2["v6_score"]+b3["v6_score"],
+                b1["v6_score"]-b2["v6_score"],
+                max(b1["v6_score"],b2["v6_score"],b3["v6_score"]),
+                1.0 if boats[i1]["v6_score"]==max(b["v6_score"] for b in boats) else 0.0]
 
-    lr2_scores = model_lr2.predict(X_lr2)
+        if len(vec) < n_feat:
+            vec.extend([0.0]*(n_feat-len(vec)))
+        elif len(vec) > n_feat:
+            vec = vec[:n_feat]
 
-    lr2_max = np.max(lr2_scores)
-    lr2_exp = np.exp(lr2_scores - lr2_max)
-    lr2_probs = lr2_exp / lr2_exp.sum()
+        X_candidates.append(vec)
 
-    combos = []
-    for pi, perm in enumerate(all_perms):
-        i1, i2, i3 = perm
-        combo_str = f"{wakus[i1]}-{wakus[i2]}-{wakus[i3]}"
-        combos.append({"combo": combo_str, "prob": float(lr2_probs[pi]),
-                        "score": float(lr2_scores[pi])})
+    X = np.array(X_candidates, dtype=np.float32)
 
-    combos.sort(key=lambda x: -x["prob"])
-    conf_score = combos[0]["prob"] - combos[1]["prob"] if len(combos) >= 2 else 0
+    # 10モデルで予測
+    all_scores = []
+    for model in ensemble_models:
+        pred = model.predict(X)
+        all_scores.append(pred)
+    all_scores = np.array(all_scores)
 
-    win_probs_lr2 = np.zeros(6)
-    for pi, perm in enumerate(all_perms):
-        win_probs_lr2[perm[0]] += lr2_probs[pi]
+    # アンサンブル平均スコア
+    ensemble_score = all_scores.mean(axis=0)
+
+    # 多数決
+    votes = {}
+    for mi in range(len(ensemble_models)):
+        best_idx = np.argmax(all_scores[mi])
+        perm = PERMS_120[best_idx]
+        combo = f"{perm[0]}-{perm[1]}-{perm[2]}"
+        votes[combo] = votes.get(combo, 0) + 1
+
+    # ランキング
+    ranking = np.argsort(-ensemble_score)
+
+    top_combos = []
+    for rank_i in range(min(20, 120)):
+        idx = ranking[rank_i]
+        perm = PERMS_120[idx]
+        combo = f"{perm[0]}-{perm[1]}-{perm[2]}"
+        score = ensemble_score[idx]
+        n_votes = votes.get(combo, 0)
+        top_combos.append({
+            "rank": rank_i + 1,
+            "combo": combo,
+            "score": float(score),
+            "votes": n_votes
+        })
+
+    # 確信度
+    confidence = float(ensemble_score[ranking[0]] - ensemble_score[ranking[1]])
+
+    # Top-1の票数
+    top1_votes = top_combos[0]["votes"]
+
+    # 勝率（アンサンブル平均からソフトマックスで算出）
+    boat_win_scores = np.zeros(6)
+    for pi, perm in enumerate(PERMS_120):
+        boat_win_scores[perm[0]-1] += ensemble_score[pi]
+    if boat_win_scores.sum() > 0:
+        exp_s = np.exp(boat_win_scores - boat_win_scores.max())
+        win_probs = exp_s / exp_s.sum()
+    else:
+        win_probs = np.ones(6) / 6
 
     return {
-        "jcd": jcd, "place": place_name, "rno": rno,
-        "boat_data": boat_data,
-        "scores": v6_scores,
-        "win_probs": win_probs_lr2,
-        "v6_win_probs": v6_win_probs,
-        "ranked": np.argsort(-win_probs_lr2),
-        "combos": combos[:20],
-        "conf_score": conf_score,
-        "top1_prob": combos[0]["prob"],
-        "top1_combo": combos[0]["combo"],
-        "wind": wind, "data_checks": data_checks,
-        "pairwise_prob": pairwise_prob,
-        "model_name": "LambdaRank v2",
+        "top_combos": top_combos,
+        "confidence": confidence,
+        "top1_votes": top1_votes,
+        "total_models": len(ensemble_models),
+        "win_probs": win_probs,
+        "pw_matrix": pw_matrix,
+        "votes": votes,
+        "boats": boats
     }
 
-
 # ============================================================
-# 展示ST表示用フォーマット関数
+# 表示ヘルパー
 # ============================================================
 def format_st(val):
-    if val is None or val == 0.15:
-        return "-"
-    if val < 0:
-        return f"F{abs(val):.2f}"
-    else:
-        return f".{val:.2f}"[1:]
+    try:
+        v = float(val)
+        if v == 0:
+            return "-"
+        return f"{v:.2f}"
+    except:
+        return str(val)
 
+def confidence_label(conf, votes, total):
+    """確信度と票数から信頼レベルを判定"""
+    vote_ratio = votes / total if total > 0 else 0
+    if vote_ratio >= 0.8 and conf >= 0.10:
+        return "🔴 超高信頼", "red"
+    elif vote_ratio >= 0.6 and conf >= 0.05:
+        return "🟠 高信頼", "orange"
+    elif vote_ratio >= 0.4:
+        return "🟡 中信頼", "goldenrod"
+    else:
+        return "⚪ 低信頼", "gray"
 
 # ============================================================
 # Streamlit UI
 # ============================================================
-st.set_page_config(page_title="ボートレース AI 予測", layout="wide")
-st.title("🚤 ボートレース AI 予測 v7")
-st.caption("LambdaRank v2 三連単直接最適化 + ペアワイズv6 マトリクス表示")
+st.set_page_config(page_title="ボートレース AI v8", layout="wide")
+st.title("🚤 ボートレース AI 予測 v8")
+st.caption("10モデル アンサンブル ｜ LambdaRank × 多数決 ｜ ペアワイズv6 マトリクス表示")
 
-(model_v6, v6_boat_features, v6_feature_names,
- model_lr2, lr2_feature_names,
- place_stats, temperature) = load_model()
+# モデル読み込み
+(model_v6, v6_boat_features, v6_col_map,
+ ensemble_models, lr2_features,
+ place_w1, temperature, ens_config) = load_models()
+
+n_models = len(ensemble_models)
 st.sidebar.success(
-    f"モデル読込完了\n"
-    f"- LambdaRank v2 ({len(lr2_feature_names)}特徴量)\n"
-    f"- ペアワイズv6 ({len(v6_boat_features)}基礎特徴量, T={temperature})"
+    f"モデル読込完了\\n"
+    f"- アンサンブル: {n_models}モデル\\n"
+    f"- 特徴量数: {len(lr2_features)}\\n"
+    f"- バックテスト ROI: 135.9%"
 )
 
+# サイドバー設定
+import datetime
 st.sidebar.header("設定")
 today = datetime.date.today()
-selected_date = st.sidebar.date_input("日付", value=today)
-hd = selected_date.strftime("%Y%m%d")
+sel_date = st.sidebar.date_input("日付", today)
+date_str = sel_date.strftime("%Y%m%d")
 
-mode = st.sidebar.radio("モード選択", ["全場一括予測", "個別レース予測"])
+mode = st.sidebar.radio("モード", ["全場一括予測", "個別レース予測"])
 
 # ============================================================
 # 全場一括予測
 # ============================================================
 if mode == "全場一括予測":
-    st.header("📊 全場全レース 一括予測")
-
-    if st.button("一括予測を開始", type="primary"):
-        with st.spinner("開催場を検出中..."):
-            venues = []
-            for code, name in PLACE_MAP.items():
-                if check_venue_open(code, hd):
-                    venues.append({"jcd": code, "name": name})
-                time.sleep(0.3)
+    if st.sidebar.button("🚀 全場予測開始"):
+        with st.spinner("開催場を検索中..."):
+            venues = scrape_racelist(date_str)
 
         if not venues:
-            st.error("開催場が見つかりません。日付を確認してください。")
+            st.error("開催場が見つかりません")
         else:
-            venue_names = ", ".join(venue["name"] for venue in venues)
-            st.info(f"開催場: {venue_names} ({len(venues)}場)")
+            st.info(f"開催場: {', '.join(venues.values())} ({len(venues)}場)")
 
             all_results = []
-            total = len(venues) * 12
-            bar = st.progress(0)
+            progress = st.progress(0)
             status = st.empty()
 
-            for vi, venue in enumerate(venues):
-                for race_no in range(1, 13):
-                    n = vi * 12 + race_no
-                    status.text(f"{venue['name']} {race_no}R ({n}/{total})")
-                    result = predict_race(
-                        venue["jcd"], hd, race_no,
-                        model_v6, v6_boat_features, v6_feature_names,
-                        model_lr2, lr2_feature_names,
-                        place_stats, temperature,
-                    )
-                    if result:
-                        all_results.append(result)
-                    time.sleep(0.5)
-                    bar.progress(n / total)
+            total_races = len(venues) * 12
+            done = 0
 
-            bar.progress(1.0)
-            status.text(f"完了: {len(all_results)} レース予測")
+            for jcd, venue_name in venues.items():
+                for rno in range(1, 13):
+                    status.text(f"{venue_name} {rno}R を予測中...")
+                    try:
+                        data = scrape_beforeinfo(jcd, rno, date_str)
+                        if data and len(data.get("boats", [])) >= 6:
+                            result = predict_race(
+                                data, jcd, model_v6, v6_boat_features,
+                                ensemble_models, lr2_features, place_w1, temperature
+                            )
+                            if result:
+                                top1 = result["top_combos"][0]
+                                label, color = confidence_label(
+                                    result["confidence"], 
+                                    result["top1_votes"],
+                                    result["total_models"]
+                                )
+                                all_results.append({
+                                    "場": venue_name,
+                                    "R": rno,
+                                    "予測": top1["combo"],
+                                    "票数": f"{result['top1_votes']}/{result['total_models']}",
+                                    "確信度": result["confidence"],
+                                    "信頼": label,
+                                    "jcd": jcd
+                                })
+                    except Exception as e:
+                        pass
+
+                    done += 1
+                    progress.progress(done / total_races)
+
+            progress.empty()
+            status.empty()
 
             if all_results:
-                all_results.sort(key=lambda x: -x["conf_score"])
+                df_results = pd.DataFrame(all_results)
 
-                st.subheader("🏆 今日の勝負レース TOP20（確信度順）")
-                top_rows = []
-                for rank, res in enumerate(all_results[:20], 1):
-                    top_rows.append({
-                        "順位": rank,
-                        "場": res["place"],
-                        "R": f"{res['rno']}R",
-                        "予測1位": res["top1_combo"],
-                        "確率": f"{res['top1_prob']*100:.2f}%",
-                        "確信度": f"{res['conf_score']*100:.3f}%",
-                    })
+                # 高信頼レース（8票以上）
+                high_conf = df_results[df_results["票数"].apply(
+                    lambda x: int(x.split("/")[0]) >= 8)]
+
+                if len(high_conf) > 0:
+                    st.subheader(f"🔴 高信頼レース（8票以上）: {len(high_conf)}件")
+                    st.dataframe(
+                        high_conf[["場","R","予測","票数","信頼"]].reset_index(drop=True),
+                        use_container_width=True,
+                        hide_index=True
+                    )
+
+                st.subheader(f"📋 全レース結果 ({len(df_results)}件)")
                 st.dataframe(
-                    pd.DataFrame(top_rows),
-                    use_container_width=True, hide_index=True,
+                    df_results[["場","R","予測","票数","確信度","信頼"]].sort_values(
+                        "確信度", ascending=False).reset_index(drop=True),
+                    use_container_width=True,
+                    hide_index=True
                 )
-
-                st.subheader("📋 全レース一覧")
-                venue_name_list = list(
-                    dict.fromkeys(venue["name"] for venue in venues)
-                )
-                for vname in venue_name_list:
-                    venue_results = [
-                        r for r in all_results if r["place"] == vname
-                    ]
-                    if not venue_results:
-                        continue
-                    with st.expander(f"🏟️ {vname} ({len(venue_results)}R)"):
-                        for res in sorted(venue_results, key=lambda x: x["rno"]):
-                            col_left, col_right = st.columns([3, 1])
-                            with col_left:
-                                top3_str = "　".join(
-                                    f"{c['combo']}({c['prob']*100:.2f}%)"
-                                    for c in res["combos"][:3]
-                                )
-                                st.text(f"{res['rno']}R: {top3_str}")
-                            with col_right:
-                                st.text(
-                                    f"確信度 {res['conf_score']*100:.3f}%"
-                                )
-
-                st.session_state["all_results"] = all_results
+            else:
+                st.warning("予測可能なレースがありません")
 
 # ============================================================
 # 個別レース予測
 # ============================================================
-elif mode == "個別レース予測":
-    st.header("🎯 個別レース予測")
+else:
+    col1, col2 = st.sidebar.columns(2)
+    sel_venue = col1.selectbox("場", list(PLACE_MAP.values()))
+    sel_race = col2.selectbox("レース", list(range(1, 13)))
 
-    col1, col2 = st.columns(2)
-    with col1:
-        place_opts = {name: code for code, name in PLACE_MAP.items()}
-        sel_place = st.selectbox("場", list(place_opts.keys()))
-        jcd = place_opts[sel_place]
-    with col2:
-        rno = st.selectbox(
-            "レース", range(1, 13), format_func=lambda x: f"{x}R"
-        )
+    jcd = str(PLACE_NAME_TO_CODE.get(sel_venue, 1)).zfill(2)
 
-    if st.button("予測する", type="primary"):
-        with st.spinner(f"{sel_place} {rno}R 予測中..."):
-            result = predict_race(
-                jcd, hd, rno,
-                model_v6, v6_boat_features, v6_feature_names,
-                model_lr2, lr2_feature_names,
-                place_stats, temperature,
-            )
+    if st.sidebar.button("🔍 予測実行"):
+        with st.spinner(f"{sel_venue} {sel_race}R を予測中..."):
+            data = scrape_beforeinfo(jcd, sel_race, date_str)
 
-        if result is None:
-            st.error(
-                "データ取得失敗。日付・場・レース番号を確認してください。"
-            )
+        if not data or len(data.get("boats", [])) < 6:
+            st.error("レースデータを取得できません")
         else:
-            st.success(f"{result['place']} {result['rno']}R 予測完了 ({result.get('model_name', 'LR2')})")
+            result = predict_race(
+                data, jcd, model_v6, v6_boat_features,
+                ensemble_models, lr2_features, place_w1, temperature
+            )
 
-            # --- データ取得チェック ---
-            dc = result.get("data_checks", [])
-            if dc:
-                with st.expander("📋 データ取得チェック", expanded=False):
-                    check_rows = []
-                    for item_name, count, status in dc:
-                        if status == "OK":
-                            icon = "✅"
-                        elif "欠損" in status or "未取得" in status:
-                            icon = "⚠️"
+            if result is None:
+                st.error("予測に失敗しました")
+            else:
+                st.header(f"🏁 {sel_venue} {sel_race}R")
+
+                # 天候情報
+                col_w1, col_w2, col_w3, col_w4 = st.columns(4)
+                col_w1.metric("天候", data.get("weather", "-"))
+                col_w2.metric("風向", data.get("wind_dir", "-"))
+                col_w3.metric("風速", f"{data.get('wind_speed', 0)}m")
+                col_w4.metric("波高", f"{data.get('wave', 0)}cm")
+
+                st.divider()
+
+                # 信頼度メトリクス
+                label, color = confidence_label(
+                    result["confidence"],
+                    result["top1_votes"],
+                    result["total_models"]
+                )
+                col_m1, col_m2, col_m3 = st.columns(3)
+                col_m1.metric("🎯 予測1位", result["top_combos"][0]["combo"])
+                col_m2.metric("📊 モデル合意",
+                              f"{result['top1_votes']}/{result['total_models']}票")
+                col_m3.metric("確信度", f"{result['confidence']:.4f}")
+
+                st.markdown(f"**信頼レベル: <span style='color:{color};font-size:1.3em'>"
+                            f"{label}</span>**", unsafe_allow_html=True)
+
+                st.divider()
+
+                # 選手情報テーブル
+                st.subheader("🚤 出走情報")
+                boat_df = pd.DataFrame([{
+                    "枠": b["waku"],
+                    "全国勝率": b.get("national_win_rate", 0),
+                    "全国2連率": b.get("national_2連rate", 0),
+                    "当地勝率": b.get("local_win_rate", 0),
+                    "モーター2連率": b.get("motor_2連rate", 0),
+                    "ボート2連率": b.get("boat_2連rate", 0),
+                    "展示T": b.get("exhibition_time", 0),
+                    "進入C": int(b.get("entry_course", b["waku"])),
+                    "ST": format_st(b.get("start_timing", 0)),
+                    "v6勝率": f"{result['win_probs'][b['waku']-1]*100:.1f}%"
+                } for b in result["boats"]])
+                st.dataframe(boat_df, use_container_width=True, hide_index=True)
+
+                st.divider()
+
+                # Top-10 三連単予測
+                st.subheader("🏆 三連単 Top-10 予測")
+                top10_data = []
+                for tc in result["top_combos"][:10]:
+                    vote_bar = "🟢" * tc["votes"] + "⚫" * (result["total_models"] - tc["votes"])
+                    top10_data.append({
+                        "順位": tc["rank"],
+                        "組合せ": tc["combo"],
+                        "スコア": f"{tc['score']:.4f}",
+                        "票数": f"{tc['votes']}/{result['total_models']}",
+                        "投票": vote_bar
+                    })
+                st.dataframe(pd.DataFrame(top10_data),
+                             use_container_width=True, hide_index=True)
+
+                st.divider()
+
+                # 多数決詳細
+                st.subheader("🗳️ モデル投票分布")
+                vote_sorted = sorted(result["votes"].items(), key=lambda x: -x[1])
+                vote_data = []
+                for combo, v in vote_sorted[:10]:
+                    vote_data.append({"組合せ": combo, "票数": v,
+                                      "割合": f"{v/result['total_models']*100:.0f}%"})
+                st.dataframe(pd.DataFrame(vote_data),
+                             use_container_width=True, hide_index=True)
+
+                st.divider()
+
+                # ペアワイズ勝率マトリクス
+                st.subheader("📊 ペアワイズ勝率マトリクス")
+                pw = result["pw_matrix"]
+                fig, ax = plt.subplots(figsize=(6, 5))
+                im = ax.imshow(pw, cmap="RdYlGn", vmin=0.3, vmax=0.7)
+                ax.set_xticks(range(6))
+                ax.set_yticks(range(6))
+                ax.set_xticklabels([f"Boat {i+1}" for i in range(6)])
+                ax.set_yticklabels([f"Boat {i+1}" for i in range(6)])
+                for i in range(6):
+                    for j in range(6):
+                        if i != j:
+                            ax.text(j, i, f"{pw[i][j]:.2f}",
+                                    ha="center", va="center", fontsize=9)
                         else:
-                            icon = "ℹ️"
-                        check_rows.append({
-                            "": icon,
-                            "項目": item_name,
-                            "取得数": count,
-                            "状態": status,
-                        })
-                    st.dataframe(
-                        pd.DataFrame(check_rows),
-                        use_container_width=True, hide_index=True,
-                    )
+                            ax.text(j, i, "-", ha="center", va="center", fontsize=9)
+                plt.colorbar(im, ax=ax, shrink=0.8)
+                ax.set_title("Win Probability (row beats column)")
+                st.pyplot(fig)
+                plt.close()
 
-            # 天候情報
-            wind = result.get("wind", {})
-            if wind:
-                weather_name = wind.get("weather_name", "不明")
-                if weather_name == "不明":
-                    weather_names = {0: "-", 1: "晴", 2: "曇", 3: "雨", 4: "雪"}
-                    weather_name = weather_names.get(wind.get("weather_num", 0), "-")
-                wind_dir_name = wind.get("wind_dir_name", "")
-                st.info(
-                    f"天候: {weather_name}　"
-                    f"風向: {wind_dir_name}　"
-                    f"風速: {wind.get('wind_speed', '-')}m　"
-                    f"波高: {wind.get('wave', '-')}cm"
-                )
+                # 平均勝率ランキング
+                avg_pw = pw.sum(axis=1) / 5
+                rank_order = np.argsort(-avg_pw)
+                st.subheader("📈 総合力ランキング")
+                rank_data = []
+                for ri, bi in enumerate(rank_order):
+                    rank_data.append({
+                        "順位": ri+1,
+                        "艇": bi+1,
+                        "平均勝率": f"{avg_pw[bi]:.3f}",
+                        "1着確率": f"{result['win_probs'][bi]*100:.1f}%"
+                    })
+                st.dataframe(pd.DataFrame(rank_data),
+                             use_container_width=True, hide_index=True)
 
-            # 選手情報
-            st.subheader("🚤 選手情報 & AIスコア")
-            boat_rows = []
-            for i, bd in enumerate(result["boat_data"]):
-                boat_rows.append({
-                    "枠": bd["waku"],
-                    "選手": bd["_name"],
-                    "級": bd["_grade"],
-                    "全国勝率": bd.get("national_win_rate", 0),
-                    "当地勝率": bd.get("local_win_rate", 0),
-                    "モーター2連": bd.get("motor_2rate", 0),
-                    "展示T": bd.get("exhibition_time", 0),
-                    "進入C": bd.get("entry_course", bd["waku"]),
-                    "展示ST": format_st(bd.get("_exhibition_st", 0.15)),
-                    "1着確率": f"{result['win_probs'][i]*100:.1f}%",
-                })
-            st.dataframe(
-                pd.DataFrame(boat_rows),
-                use_container_width=True, hide_index=True,
-            )
-
-            # スタート展示
-            st.subheader("🏁 スタート展示")
-            st_rows = []
-            course_data = []
-            for bd in result["boat_data"]:
-                course_data.append({
-                    "course": bd.get("entry_course", bd["waku"]),
-                    "waku": bd["waku"],
-                    "name": bd["_name"],
-                    "st": bd.get("_exhibition_st", 0.15),
-                })
-            course_data.sort(key=lambda x: x["course"])
-
-            for cd in course_data:
-                st_val = cd["st"]
-                if st_val < 0:
-                    st_display = f"F{abs(st_val):.2f}"
-                    st_status = "⚠️ フライング"
-                elif st_val == 0.15:
-                    st_display = "-"
-                    st_status = "未取得"
-                elif st_val <= 0.05:
-                    st_display = f".{st_val:.2f}"[1:]
-                    st_status = "🟢 好スタート"
-                elif st_val <= 0.10:
-                    st_display = f".{st_val:.2f}"[1:]
-                    st_status = "🟡 普通"
-                else:
-                    st_display = f".{st_val:.2f}"[1:]
-                    st_status = "🔴 遅い"
-
-                st_rows.append({
-                    "コース": cd["course"],
-                    "枠": f"{cd['waku']}号艇",
-                    "選手": cd["name"],
-                    "ST": st_display,
-                    "評価": st_status,
-                })
-
-            st.dataframe(
-                pd.DataFrame(st_rows),
-                use_container_width=True, hide_index=True,
-            )
-
-            # 3連単予測
-            st.subheader("🎯 3連単予測 TOP10")
-            combo_rows = []
-            for rank, combo in enumerate(result["combos"][:10], 1):
-                expected = (
-                    f"{1/combo['prob']:.0f}倍" if combo["prob"] > 0 else "-"
-                )
-                combo_rows.append({
-                    "順位": rank,
-                    "3連単": combo["combo"],
-                    "確率": f"{combo['prob']*100:.2f}%",
-                    "スコア": f"{combo['score']:.3f}",
-                    "期待倍率": expected,
-                })
-            st.dataframe(
-                pd.DataFrame(combo_rows),
-                use_container_width=True, hide_index=True,
-            )
-
-            st.metric(
-                label="確信度スコア",
-                value=f"{result['conf_score']*100:.3f}%",
-                help="Top1確率 − Top2確率。大きいほど予測に自信あり。",
-            )
-
-            # ペアワイズ勝率マトリクス
-            st.subheader("⚔️ ペアワイズ勝率マトリクス（v6参考）")
-            st.caption("ペアワイズv6による各艇同士の勝率。三連単予測はLambdaRank v2が担当。")
-
-            pw = result["pairwise_prob"]
-            pw_boats = result["boat_data"]
-
-            col_labels = [f"{b['waku']}号艇" for b in pw_boats]
-            row_labels = [f"{b['waku']}号艇 {b['_name']}" for b in pw_boats]
-
-            pw_display = pd.DataFrame(
-                [[f"{pw[i][j]*100:.1f}%" if i != j else "―" for j in range(6)]
-                 for i in range(6)],
-                columns=col_labels,
-                index=row_labels,
-            )
-            st.dataframe(pw_display, use_container_width=True)
-
-            # ヒートマップ
-            fig, ax = plt.subplots(figsize=(8, 6))
-            pw_heatmap = pw.copy()
-            for i in range(6):
-                pw_heatmap[i][i] = np.nan
-
-            im = ax.imshow(pw_heatmap, cmap="RdYlGn", vmin=0.3, vmax=0.7)
-            ax.set_xticks(range(6))
-            ax.set_yticks(range(6))
-            ax.set_xticklabels([f"{b['waku']}" for b in pw_boats], fontsize=12)
-            ax.set_yticklabels([f"{b['waku']}" for b in pw_boats], fontsize=12)
-            ax.set_xlabel("Opponent (j)", fontsize=12)
-            ax.set_ylabel("Boat (i)", fontsize=12)
-            ax.set_title("P(i beats j) - Pairwise Win Probability", fontsize=14)
-
-            for i in range(6):
-                for j in range(6):
-                    if i == j:
-                        ax.text(j, i, "―", ha="center", va="center",
-                                fontsize=11, color="gray")
-                    else:
-                        val = pw[i][j] * 100
-                        color = "white" if val > 65 or val < 35 else "black"
-                        ax.text(j, i, f"{val:.1f}%", ha="center", va="center",
-                                fontsize=10, fontweight="bold", color=color)
-
-            plt.colorbar(im, ax=ax, label="Win Probability")
-            plt.tight_layout()
-            st.pyplot(fig)
-            plt.close()
-
-            # ペアワイズ平均勝率ランキング
-            st.subheader("🏅 ペアワイズ平均勝率ランキング (v6参考)")
-            avg_pw = []
-            for i in range(6):
-                wins = [pw[i][j] for j in range(6) if i != j]
-                avg = np.mean(wins)
-                avg_pw.append({
-                    "順位": 0,
-                    "枠": pw_boats[i]["waku"],
-                    "選手名": pw_boats[i]["_name"],
-                    "平均勝率": f"{avg*100:.1f}%",
-                    "avg_raw": avg,
-                    "対戦詳細": " / ".join([
-                        f"vs{pw_boats[j]['waku']}号艇:{pw[i][j]*100:.0f}%"
-                        for j in range(6) if i != j
-                    ]),
-                })
-            avg_pw.sort(key=lambda x: x["avg_raw"], reverse=True)
-            for rank, item in enumerate(avg_pw, 1):
-                item["順位"] = rank
-
-            avg_df = pd.DataFrame(avg_pw)[["順位", "枠", "選手名", "平均勝率", "対戦詳細"]]
-            st.dataframe(avg_df, use_container_width=True, hide_index=True)
-
-# ============================================================
 # フッター
-# ============================================================
-st.sidebar.markdown("---")
-st.sidebar.markdown(
-    """
-**モデル情報**
-- **メイン: LambdaRank v2** (三連単直接最適化)
-- サブ: ペアワイズv6 (マトリクス表示用)
-- バックテスト: Top1 10.05%, ROI 106.2%
-- 確信度5%以上: 的中率19%, ROI 127%
-"""
+st.divider()
+st.caption(
+    f"🤖 Boatrace AI v8 | {n_models}モデル アンサンブル LambdaRank | "
+    f"{len(lr2_features)}特徴量 | "
+    f"Back-test: Top-1 11.24%, ROI 135.9% | "
+    f"高信頼(8票+): Top-1 15.0%, ROI 147.8%"
 )
-st.sidebar.caption("※ 予測は参考情報です。投票は自己責任でお願いします。")
