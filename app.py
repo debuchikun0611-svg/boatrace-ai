@@ -14,6 +14,13 @@ matplotlib.rcParams["font.family"] = "DejaVu Sans"
 # パス設定
 # ============================================================
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+# Streamlit Cloud対応: ファイルが見つからない場合のフォールバック
+if not os.path.exists(os.path.join(SCRIPT_DIR, "ensemble_model_0.txt")):
+    # カレントディレクトリを試す
+    if os.path.exists("ensemble_model_0.txt"):
+        SCRIPT_DIR = "."
+    elif os.path.exists("/mount/src/boatrace-ai/ensemble_model_0.txt"):
+        SCRIPT_DIR = "/mount/src/boatrace-ai"
 
 # v6 ペアワイズ（マトリクス表示用）
 MODEL_V6_PATH = os.path.join(SCRIPT_DIR, "pairwise_model_v6.txt")
