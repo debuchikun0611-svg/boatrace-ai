@@ -535,15 +535,19 @@ def predict_race(boats_data, jcd_code, model_v6, v6_boat_features,
     for model in ensemble_models:
         pred = model.predict(X)
         all_scores.append(pred)
-    all_scores = np.array(all_scores)
+
+    if len(all_scores) == 0:
+        return None
+
+    all_scores = np.array(all_scores)  # shape: (n_models, 120)
 
     # アンサンブル平均スコア
-    ensemble_score = all_scores.mean(axis=0)
+    ensemble_score = all_scores.mean(axis=0)  # shape: (120,)
 
     # 多数決
     votes = {}
     for mi in range(len(ensemble_models)):
-        best_idx = np.argmax(all_scores[mi])
+        best_idx = int(np.argmax(all_scores[mi]))
         perm = PERMS_120[best_idx]
         combo = f"{perm[0]}-{perm[1]}-{perm[2]}"
         votes[combo] = votes.get(combo, 0) + 1
@@ -552,45 +556,35 @@ def predict_race(boats_data, jcd_code, model_v6, v6_boat_features,
     ranking = np.argsort(-ensemble_score)
 
     top_combos = []
-    for rank_i in range(min(20, 120)):
-        idx = ranking[rank_i]
+    for rank_i in range(min(20, len(ensemble_score))):
+        idx = int(ranking[rank_i])
         perm = PERMS_120[idx]
         combo = f"{perm[0]}-{perm[1]}-{perm[2]}"
-        score = ensemble_score[idx]
+        score = float(ensemble_score[idx])
         n_votes = votes.get(combo, 0)
         top_combos.append({
             "rank": rank_i + 1,
             "combo": combo,
-            "score": float(score),
+            "score": score,
             "votes": n_votes
         })
 
     # 確信度
-    confidence = float(ensemble_score[ranking[0]] - ensemble_score[ranking[1]])
+    if len(ensemble_score) >= 2:
+        confidence = float(ensemble_score[int(ranking[0])] - ensemble_score[int(ranking[1])])
+    else:
+        confidence = 0.0
 
     # Top-1の票数
-    top1_votes = top_combos[0]["votes"]
+    top1_votes = top_combos[0]["votes"] if top_combos else 0
 
     # 勝率（アンサンブル平均からソフトマックスで算出）
     boat_win_scores = np.zeros(6)
     for pi, perm in enumerate(PERMS_120):
-        boat_win_scores[perm[0]-1] += ensemble_score[pi]
-    if boat_win_scores.sum() > 0:
-        exp_s = np.exp(boat_win_scores - boat_win_scores.max())
-        win_probs = exp_s / exp_s.sum()
-    else:
-        win_probs = np.ones(6) / 6
-
-    return {
-        "top_combos": top_combos,
-        "confidence": confidence,
-        "top1_votes": top1_votes,
-        "total_models": len(ensemble_models),
-        "win_probs": win_probs,
-        "pw_matrix": pw_matrix,
-        "votes": votes,
-        "boats": boats
-    }
+        if pi < len(ensemble_score):
+            boat_win_scores[perm[0]-1] += ensemble_score[pi]
+    exp_s = np.exp(boat_win_scores - boat_win_scores.max())
+    win_probs = exp_s / exp_s.sum()
 
 # ============================================================
 # 表示ヘルパー
