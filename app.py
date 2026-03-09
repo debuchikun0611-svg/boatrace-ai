@@ -377,231 +377,240 @@ def check_race_exists(jcd, race_num, date_str):
 # ============================================================
 # 予測
 # ============================================================
-def predict_race(boats_data, jcd_code, model_v6, v6_boat_features, 
+def predict_race(boats_data, jcd_code, model_v6, v6_boat_features,
                  ensemble_models, lr2_features, place_w1, temperature):
     """10モデルアンサンブル予測"""
-    jcd = int(jcd_code)
-    n_feat = len(lr2_features)
-    boats = boats_data["boats"]
-    
-    if len(boats) < 6:
+    try:
+        jcd = int(jcd_code)
+        n_feat = len(lr2_features)
+        boats = boats_data.get("boats", [])
+
+        if len(boats) < 6:
+            return None
+
+        # 天候特徴量
+        weather_val = WEATHER_MAP.get(str(boats_data.get("weather", "")), 0)
+        wind_dir_str = str(boats_data.get("wind_dir", ""))
+        wind_dir_val = WIND_DIR_MAP.get(wind_dir_str, 0)
+        wind_speed = safe_float(boats_data.get("wind_speed", 0))
+        wind_eff = WIND_EFFECT.get(wind_dir_val, 0) * wind_speed
+
+        pw1 = place_w1.get(jcd, 55.0)
+
+        # 各艇の基本特徴量を確実にセット
+        for b in boats:
+            b["jcd"] = jcd
+            b["grade"] = 0
+            b["weather"] = weather_val
+            b["wind_dir"] = wind_dir_val
+            b["wind_speed"] = wind_speed
+            b["wind_effect"] = wind_eff
+            b["place_w1_winrate"] = pw1
+            b["waku_win_hist"] = WAKU_WIN_HIST.get(b.get("waku", 1), 5.0)
+
+            # 数値フィールドを確実にfloatに
+            for key in ["national_win_rate", "national_2連rate", "national_3連rate",
+                        "local_win_rate", "local_2連rate", "local_3連rate",
+                        "motor_2連rate", "motor_3連rate", "boat_2連rate", "boat_3連rate",
+                        "exhibition_time", "start_timing", "avg_st",
+                        "entry_course", "course_diff", "flying_count", "late_count"]:
+                b[key] = safe_float(b.get(key, 0))
+
+            if b.get("entry_course", 0) == 0:
+                b["entry_course"] = float(b.get("waku", 1))
+            b["course_diff"] = b["entry_course"] - b.get("waku", 1)
+            b["machine_score"] = (b["motor_2連rate"] + b["boat_2連rate"]) / 2
+
+        # 相対特徴量
+        stats_keys = ["national_win_rate", "national_2連rate",
+                      "local_win_rate", "motor_2連rate",
+                      "exhibition_time", "avg_st", "machine_score"]
+        vals = {k: np.array([b[k] for b in boats]) for k in stats_keys}
+        means = {k: float(np.mean(v)) for k, v in vals.items()}
+        stds = {k: max(float(np.std(v)), 1e-6) for k, v in vals.items()}
+
+        for i, b in enumerate(boats):
+            for k in stats_keys:
+                b[f"{k}_z"] = (b[k] - means[k]) / stds[k]
+                b[f"{k}_rank"] = float(np.argsort(np.argsort(-vals[k]))[i] + 1)
+            b["diff_w1_national_win_rate"] = b["national_win_rate"] - boats[0]["national_win_rate"]
+            b["diff_w1_exhibition_time"] = b["exhibition_time"] - boats[0]["exhibition_time"]
+            b["diff_w1_motor_2連rate"] = b["motor_2連rate"] - boats[0]["motor_2連rate"]
+            b["diff_w1_machine_score"] = b["machine_score"] - boats[0]["machine_score"]
+            b["et_diff_mean"] = b["exhibition_time"] - means["exhibition_time"]
+            b["et_diff_best"] = b["exhibition_time"] - min(vals["exhibition_time"])
+
+        # v6スコア計算
+        v6_n_feat = model_v6.num_feature()
+        raw_feats = []
+        for b in boats:
+            vec = [safe_float(b.get(f, 0)) for f in v6_boat_features]
+            raw_feats.append(vec)
+
+        pair_rows = []
+        for i in range(6):
+            for j in range(6):
+                if i == j:
+                    continue
+                row = list(raw_feats[i]) + list(raw_feats[j])
+                row += [raw_feats[i][k] - raw_feats[j][k] for k in range(len(v6_boat_features))]
+                row += [i + 1, j + 1, (i + 1) * (j + 1), abs(i - j)]
+                pair_rows.append(row)
+
+        X_pair = np.array(pair_rows, dtype=np.float32)
+        if X_pair.shape[1] < v6_n_feat:
+            X_pair = np.hstack([X_pair, np.zeros((X_pair.shape[0], v6_n_feat - X_pair.shape[1]), dtype=np.float32)])
+        elif X_pair.shape[1] > v6_n_feat:
+            X_pair = X_pair[:, :v6_n_feat]
+
+        raw_pred = model_v6.predict(X_pair)
+        sig = 1.0 / (1.0 + np.exp(-raw_pred / temperature))
+
+        pw_matrix = np.zeros((6, 6))
+        win_scores = np.zeros(6)
+        idx = 0
+        for i in range(6):
+            for j in range(6):
+                if i == j:
+                    continue
+                pw_matrix[i][j] = sig[idx]
+                win_scores[i] += sig[idx]
+                idx += 1
+        total = win_scores.sum()
+        if total > 0:
+            win_scores /= total
+
+        for i, b in enumerate(boats):
+            b["v6_score"] = float(win_scores[i])
+
+        # 120通り候補の特徴量構築
+        boat_keys = [
+            "waku", "national_win_rate", "national_2連rate", "national_3連rate",
+            "local_win_rate", "motor_2連rate", "motor_3連rate", "exhibition_time",
+            "start_timing", "avg_st", "entry_course", "course_diff", "machine_score",
+            "flying_count", "late_count", "waku_win_hist",
+            "national_win_rate_z", "national_win_rate_rank",
+            "national_2連rate_z",
+            "motor_2連rate_z", "motor_2連rate_z",
+            "exhibition_time_z", "exhibition_time_rank",
+            "machine_score_z", "machine_score_rank",
+            "diff_w1_national_win_rate", "diff_w1_exhibition_time",
+            "diff_w1_motor_2連rate", "diff_w1_machine_score",
+            "et_diff_mean", "et_diff_best",
+            "v6_score"
+        ]
+
+        X_candidates = []
+        for perm in PERMS_120:
+            i1, i2, i3 = perm[0] - 1, perm[1] - 1, perm[2] - 1
+            b1, b2, b3 = boats[i1], boats[i2], boats[i3]
+
+            vec = []
+            for b in [b1, b2, b3]:
+                for k in boat_keys:
+                    vec.append(safe_float(b.get(k, 0)))
+
+            diff_keys = ["national_win_rate", "exhibition_time", "motor_2連rate",
+                         "machine_score", "v6_score", "entry_course"]
+            for k in diff_keys:
+                vec.append(safe_float(b1.get(k, 0)) - safe_float(b2.get(k, 0)))
+                vec.append(safe_float(b1.get(k, 0)) - safe_float(b3.get(k, 0)))
+                vec.append(safe_float(b2.get(k, 0)) - safe_float(b3.get(k, 0)))
+
+            trio_keys = ["national_win_rate", "motor_2連rate", "exhibition_time",
+                         "machine_score", "v6_score"]
+            for k in trio_keys:
+                vs = [safe_float(b1.get(k, 0)), safe_float(b2.get(k, 0)), safe_float(b3.get(k, 0))]
+                vec += [float(np.mean(vs)), float(np.std(vs)), max(vs) - min(vs), min(vs)]
+
+            vec.append(perm[0] * 100 + perm[1] * 10 + perm[2])
+            vec.append(perm[0])
+            vec.append(perm[1])
+            vec.append(perm[2])
+            vec.append(perm[0] * perm[1] * perm[2])
+
+            vec += [jcd, 0, weather_val, wind_speed, wind_eff, pw1]
+            vec += [b1["v6_score"] + b2["v6_score"] + b3["v6_score"],
+                    b1["v6_score"] - b2["v6_score"],
+                    max(b1["v6_score"], b2["v6_score"], b3["v6_score"]),
+                    1.0 if boats[i1]["v6_score"] == max(b["v6_score"] for b in boats) else 0.0]
+
+            if len(vec) < n_feat:
+                vec.extend([0.0] * (n_feat - len(vec)))
+            elif len(vec) > n_feat:
+                vec = vec[:n_feat]
+
+            X_candidates.append(vec)
+
+        X = np.array(X_candidates, dtype=np.float32)
+
+        # 10モデルで予測
+        all_scores = []
+        for model in ensemble_models:
+            pred = model.predict(X)
+            all_scores.append(pred)
+
+        if len(all_scores) == 0:
+            return None
+
+        all_scores = np.array(all_scores)
+        ensemble_score = all_scores.mean(axis=0)
+
+        # 多数決
+        votes = {}
+        for mi in range(len(ensemble_models)):
+            best_idx = int(np.argmax(all_scores[mi]))
+            perm = PERMS_120[best_idx]
+            combo = f"{perm[0]}-{perm[1]}-{perm[2]}"
+            votes[combo] = votes.get(combo, 0) + 1
+
+        # ランキング
+        ranking = np.argsort(-ensemble_score)
+
+        top_combos = []
+        for rank_i in range(min(20, len(ensemble_score))):
+            idx = int(ranking[rank_i])
+            perm = PERMS_120[idx]
+            combo = f"{perm[0]}-{perm[1]}-{perm[2]}"
+            score = float(ensemble_score[idx])
+            n_votes = votes.get(combo, 0)
+            top_combos.append({
+                "rank": rank_i + 1,
+                "combo": combo,
+                "score": score,
+                "votes": n_votes
+            })
+
+        if len(ensemble_score) >= 2:
+            confidence = float(ensemble_score[int(ranking[0])] - ensemble_score[int(ranking[1])])
+        else:
+            confidence = 0.0
+
+        top1_votes = top_combos[0]["votes"] if top_combos else 0
+
+        # 勝率
+        boat_win_scores = np.zeros(6)
+        for pi, perm in enumerate(PERMS_120):
+            if pi < len(ensemble_score):
+                boat_win_scores[perm[0] - 1] += ensemble_score[pi]
+        exp_s = np.exp(boat_win_scores - boat_win_scores.max())
+        win_probs = exp_s / exp_s.sum()
+
+        return {
+            "top_combos": top_combos,
+            "confidence": confidence,
+            "top1_votes": top1_votes,
+            "total_models": len(ensemble_models),
+            "win_probs": win_probs,
+            "pw_matrix": pw_matrix,
+            "votes": votes,
+            "boats": boats
+        }
+
+    except Exception as e:
+        st.error(f"予測エラー: {str(e)}")
         return None
 
-    # 天候特徴量
-    weather_val = WEATHER_MAP.get(boats_data.get("weather", ""), 0)
-    wind_dir_str = boats_data.get("wind_dir", "")
-    wind_dir_val = WIND_DIR_MAP.get(wind_dir_str, 0)
-    wind_speed = safe_float(boats_data.get("wind_speed", 0))
-    wind_eff = WIND_EFFECT.get(wind_dir_val, 0) * wind_speed
-
-    pw1 = place_w1.get(jcd, 55.0)
-
-    # 各艇の基本特徴量
-    for b in boats:
-        b.setdefault("jcd", jcd)
-        b.setdefault("grade", 0)
-        b.setdefault("weather", weather_val)
-        b.setdefault("wind_dir", wind_dir_val)
-        b.setdefault("wind_speed", wind_speed)
-        b.setdefault("wind_effect", wind_eff)
-        b.setdefault("place_w1_winrate", pw1)
-        b.setdefault("waku_win_hist", WAKU_WIN_HIST.get(b["waku"], 5.0))
-        b.setdefault("national_win_rate", 0)
-        b.setdefault("national_2連rate", 0)
-        b.setdefault("national_3連rate", 0)
-        b.setdefault("local_win_rate", 0)
-        b.setdefault("local_2連rate", 0)
-        b.setdefault("local_3連rate", 0)
-        b.setdefault("motor_2連rate", 0)
-        b.setdefault("motor_3連rate", 0)
-        b.setdefault("boat_2連rate", 0)
-        b.setdefault("boat_3連rate", 0)
-        b.setdefault("exhibition_time", 0)
-        b.setdefault("start_timing", 0)
-        b.setdefault("avg_st", 0)
-        b.setdefault("entry_course", b["waku"])
-        b.setdefault("course_diff", 0)
-        b.setdefault("flying_count", 0)
-        b.setdefault("late_count", 0)
-        b.setdefault("machine_score", (b.get("motor_2連rate",0)+b.get("boat_2連rate",0))/2)
-
-    # 相対特徴量
-    stats_keys = ["national_win_rate","national_2連rate",
-                  "local_win_rate","motor_2連rate",
-                  "exhibition_time","avg_st","machine_score"]
-    vals = {k: np.array([b[k] for b in boats]) for k in stats_keys}
-    means = {k: np.mean(v) for k, v in vals.items()}
-    stds = {k: max(np.std(v), 1e-6) for k, v in vals.items()}
-
-    for i, b in enumerate(boats):
-        for k in stats_keys:
-            b[f"{k}_z"] = (b[k] - means[k]) / stds[k]
-            b[f"{k}_rank"] = float(np.argsort(np.argsort(-vals[k]))[i] + 1)
-        b["diff_w1_national_win_rate"] = b["national_win_rate"] - boats[0]["national_win_rate"]
-        b["diff_w1_exhibition_time"] = b["exhibition_time"] - boats[0]["exhibition_time"]
-        b["diff_w1_motor_2連rate"] = b["motor_2連rate"] - boats[0]["motor_2連rate"]
-        b["diff_w1_machine_score"] = b["machine_score"] - boats[0]["machine_score"]
-        b["et_diff_mean"] = b["exhibition_time"] - means["exhibition_time"]
-        b["et_diff_best"] = b["exhibition_time"] - min(vals["exhibition_time"])
-
-    # v6スコア計算
-    v6_n_feat = model_v6.num_feature()
-    raw_feats = []
-    for b in boats:
-        vec = [b.get(f, 0.0) for f in v6_boat_features]
-        raw_feats.append(vec)
-
-    pair_rows = []
-    for i in range(6):
-        for j in range(6):
-            if i == j: continue
-            row = list(raw_feats[i]) + list(raw_feats[j])
-            row += [raw_feats[i][k]-raw_feats[j][k] for k in range(len(v6_boat_features))]
-            row += [i+1, j+1, (i+1)*(j+1), abs(i-j)]
-            pair_rows.append(row)
-
-    X_pair = np.array(pair_rows, dtype=np.float32)
-    if X_pair.shape[1] < v6_n_feat:
-        X_pair = np.hstack([X_pair, np.zeros((X_pair.shape[0], v6_n_feat-X_pair.shape[1]), dtype=np.float32)])
-    elif X_pair.shape[1] > v6_n_feat:
-        X_pair = X_pair[:, :v6_n_feat]
-
-    raw_pred = model_v6.predict(X_pair)
-    sig = 1.0 / (1.0 + np.exp(-raw_pred / temperature))
-
-    # ペアワイズ勝率マトリクス
-    pw_matrix = np.zeros((6, 6))
-    win_scores = np.zeros(6)
-    idx = 0
-    for i in range(6):
-        for j in range(6):
-            if i == j: continue
-            pw_matrix[i][j] = sig[idx]
-            win_scores[i] += sig[idx]
-            idx += 1
-    total = win_scores.sum()
-    if total > 0:
-        win_scores /= total
-
-    for i, b in enumerate(boats):
-        b["v6_score"] = win_scores[i]
-
-    # 120通り候補の特徴量構築
-    boat_keys = [
-        "waku","national_win_rate","national_2連rate","national_3連rate",
-        "local_win_rate","motor_2連rate","motor_3連rate","exhibition_time",
-        "start_timing","avg_st","entry_course","course_diff","machine_score",
-        "flying_count","late_count","waku_win_hist",
-        "national_win_rate_z","national_win_rate_rank",
-        "national_2連rate_z",
-        "motor_2連rate_z","motor_2連rate_z",
-        "exhibition_time_z","exhibition_time_rank",
-        "machine_score_z","machine_score_rank",
-        "diff_w1_national_win_rate","diff_w1_exhibition_time",
-        "diff_w1_motor_2連rate","diff_w1_machine_score",
-        "et_diff_mean","et_diff_best",
-        "v6_score"
-    ]
-
-    X_candidates = []
-    for perm in PERMS_120:
-        i1, i2, i3 = perm[0]-1, perm[1]-1, perm[2]-1
-        b1, b2, b3 = boats[i1], boats[i2], boats[i3]
-
-        vec = []
-        for b in [b1, b2, b3]:
-            for k in boat_keys:
-                vec.append(b.get(k, 0.0))
-
-        diff_keys = ["national_win_rate","exhibition_time","motor_2連rate",
-                     "machine_score","v6_score","entry_course"]
-        for k in diff_keys:
-            vec.append(b1.get(k,0)-b2.get(k,0))
-            vec.append(b1.get(k,0)-b3.get(k,0))
-            vec.append(b2.get(k,0)-b3.get(k,0))
-
-        trio_keys = ["national_win_rate","motor_2連rate","exhibition_time",
-                     "machine_score","v6_score"]
-        for k in trio_keys:
-            vs = [b1.get(k,0), b2.get(k,0), b3.get(k,0)]
-            vec += [np.mean(vs), np.std(vs), max(vs)-min(vs), min(vs)]
-
-        vec.append(perm[0]*100+perm[1]*10+perm[2])
-        vec.append(perm[0])
-        vec.append(perm[1])
-        vec.append(perm[2])
-        vec.append(perm[0]*perm[1]*perm[2])
-
-        vec += [jcd, 0, weather_val, wind_speed, wind_eff, pw1]
-        vec += [b1["v6_score"]+b2["v6_score"]+b3["v6_score"],
-                b1["v6_score"]-b2["v6_score"],
-                max(b1["v6_score"],b2["v6_score"],b3["v6_score"]),
-                1.0 if boats[i1]["v6_score"]==max(b["v6_score"] for b in boats) else 0.0]
-
-        if len(vec) < n_feat:
-            vec.extend([0.0]*(n_feat-len(vec)))
-        elif len(vec) > n_feat:
-            vec = vec[:n_feat]
-
-        X_candidates.append(vec)
-
-    X = np.array(X_candidates, dtype=np.float32)
-
-    # 10モデルで予測
-    all_scores = []
-    for model in ensemble_models:
-        pred = model.predict(X)
-        all_scores.append(pred)
-
-    if len(all_scores) == 0:
-        return None
-
-    all_scores = np.array(all_scores)  # shape: (n_models, 120)
-
-    # アンサンブル平均スコア
-    ensemble_score = all_scores.mean(axis=0)  # shape: (120,)
-
-    # 多数決
-    votes = {}
-    for mi in range(len(ensemble_models)):
-        best_idx = int(np.argmax(all_scores[mi]))
-        perm = PERMS_120[best_idx]
-        combo = f"{perm[0]}-{perm[1]}-{perm[2]}"
-        votes[combo] = votes.get(combo, 0) + 1
-
-    # ランキング
-    ranking = np.argsort(-ensemble_score)
-
-    top_combos = []
-    for rank_i in range(min(20, len(ensemble_score))):
-        idx = int(ranking[rank_i])
-        perm = PERMS_120[idx]
-        combo = f"{perm[0]}-{perm[1]}-{perm[2]}"
-        score = float(ensemble_score[idx])
-        n_votes = votes.get(combo, 0)
-        top_combos.append({
-            "rank": rank_i + 1,
-            "combo": combo,
-            "score": score,
-            "votes": n_votes
-        })
-
-    # 確信度
-    if len(ensemble_score) >= 2:
-        confidence = float(ensemble_score[int(ranking[0])] - ensemble_score[int(ranking[1])])
-    else:
-        confidence = 0.0
-
-    # Top-1の票数
-    top1_votes = top_combos[0]["votes"] if top_combos else 0
-
-    # 勝率（アンサンブル平均からソフトマックスで算出）
-    boat_win_scores = np.zeros(6)
-    for pi, perm in enumerate(PERMS_120):
-        if pi < len(ensemble_score):
-            boat_win_scores[perm[0]-1] += ensemble_score[pi]
-    exp_s = np.exp(boat_win_scores - boat_win_scores.max())
-    win_probs = exp_s / exp_s.sum()
 
 # ============================================================
 # 表示ヘルパー
