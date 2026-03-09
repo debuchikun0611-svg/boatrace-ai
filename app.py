@@ -948,4 +948,54 @@ st.caption(
     f"{len(lr2_features)}特徴量 | "
     f"Back-test: Top-1 11.24%, ROI 135.9% | "
     f"高信頼(8票+): Top-1 15.0%, ROI 147.8%"
+    # デバッグモード
+st.divider()
+with st.expander("🔧 デバッグ: HTML構造確認"):
+    debug_jcd = st.text_input("場コード (例: 10)", "10")
+    debug_rno = st.text_input("レース番号", "3")
+    if st.button("HTML取得"):
+        # 出走表
+        url1 = f"https://www.boatrace.jp/owpc/pc/race/racelist?rno={debug_rno}&jcd={debug_jcd}&hd={date_str}"
+        try:
+            r1 = requests.get(url1, headers=HEADERS, timeout=15)
+            soup1 = BeautifulSoup(r1.content, "html.parser")
+            tbody_list = soup1.select("tbody.is-fs12")
+            st.write(f"出走表 tbody数: {len(tbody_list)}")
+            for i, tbody in enumerate(tbody_list[:2]):
+                st.write(f"--- 枠{i+1} ---")
+                tds = tbody.select("td")
+                st.write(f"td数: {len(tds)}")
+                for j, td in enumerate(tds):
+                    cls = td.get("class", [])
+                    txt = td.get_text(strip=True)[:60]
+                    st.text(f"td[{j}]: class={cls} text='{txt}'")
+        except Exception as e:
+            st.error(f"出走表エラー: {e}")
+
+        # 直前情報
+        url2 = f"https://www.boatrace.jp/owpc/pc/race/beforeinfo?rno={debug_rno}&jcd={debug_jcd}&hd={date_str}"
+        try:
+            r2 = requests.get(url2, headers=HEADERS, timeout=15)
+            soup2 = BeautifulSoup(r2.content, "html.parser")
+
+            st.write("--- 天候 ---")
+            weather_section = soup2.select_one("div.weather1")
+            if weather_section:
+                st.code(str(weather_section)[:1500])
+            else:
+                st.write("weather1 not found")
+
+            st.write("--- 直前情報 tbody ---")
+            tbody_list2 = soup2.select("tbody.is-fs12")
+            st.write(f"tbody数: {len(tbody_list2)}")
+            for i, tbody in enumerate(tbody_list2[:2]):
+                st.write(f"--- 枠{i+1} ---")
+                tds = tbody.select("td")
+                st.write(f"td数: {len(tds)}")
+                for j, td in enumerate(tds):
+                    cls = td.get("class", [])
+                    txt = td.get_text(strip=True)[:60]
+                    st.text(f"td[{j}]: class={cls} text='{txt}'")
+        except Exception as e:
+            st.error(f"直前情報エラー: {e}")
 )
