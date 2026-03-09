@@ -182,7 +182,7 @@ def scrape_beforeinfo(jcd, race_num, date_str):
     # ========================================
     url_racelist = f"https://www.boatrace.jp/owpc/pc/race/racelist?rno={race_num}&jcd={jcd}&hd={date_str}"
     try:
-        r1 = requests.get(url_racelist, headers=HEADERS, timeout=10)
+        r1 = requests.get(url_racelist, headers=HEADERS, timeout=15)
         soup1 = BeautifulSoup(r1.content, "html.parser")
 
         tbody_list = soup1.select("tbody.is-fs12")
@@ -190,125 +190,64 @@ def scrape_beforeinfo(jcd, race_num, date_str):
             waku = i + 1
             b = {"waku": waku}
 
-            # 全tdのテキストを取得
             tds = tbody.select("td")
-            all_texts = [get_text(td) for td in tds]
 
-            # 全数値を抽出
-            all_nums = []
-            for txt in all_texts:
-                cleaned = txt.replace("F", "").replace("L", "").strip()
-                try:
-                    all_nums.append(float(cleaned))
-                except:
-                    pass
+            # td[3]: "F0L00.13" → F数, L数, 平均ST
+            if len(tds) > 3:
+                txt3 = tds[3].get_text(strip=True)
+                m_f = re.search(r"F(\d+)", txt3)
+                m_l = re.search(r"L(\d+)", txt3)
+                b["flying_count"] = int(m_f.group(1)) if m_f else 0
+                b["late_count"] = int(m_l.group(1)) if m_l else 0
+                # 平均STは末尾の0.XX
+                m_st = re.search(r"(\d+\.\d+)$", txt3)
+                b["avg_st"] = float(m_st.group(1)) if m_st else 0.0
 
-            # ボートレース出走表の数値パターン:
-            # 登番(4桁), F数(0-2), 全国勝率, 当地勝率, モーターNo, ボートNo,
-            # L数(0-2), 全国2連率, 当地2連率, モーター2連率, ボート2連率,
-            # 平均ST(0.XX), 全国3連率, 当地3連率, モーター3連率, ボート3連率,
-            # 年齢, 体重, ...
+            # td[4]: "6.5149.0768.52" → 全国勝率, 2連率, 3連率
+            if len(tds) > 4:
+                txt4 = tds[4].get_text(strip=True)
+                nums4 = re.findall(r"\d+\.\d+", txt4)
+                b["national_win_rate"] = float(nums4[0]) if len(nums4) > 0 else 0
+                b["national_2連rate"] = float(nums4[1]) if len(nums4) > 1 else 0
+                b["national_3連rate"] = float(nums4[2]) if len(nums4) > 2 else 0
 
-            # 勝率の位置を特定（登番の後の最初の1-9の範囲の数値）
-            national_wr = 0
-            national_2r = 0
-            national_3r = 0
-            local_wr = 0
-            local_2r = 0
-            local_3r = 0
-            motor_2r = 0
-            motor_3r = 0
-            boat_2r = 0
-            boat_3r = 0
-            avg_st = 0
-            f_count = 0
-            l_count = 0
+            # td[5]: "3.3812.5037.50" → 当地勝率, 2連率, 3連率
+            if len(tds) > 5:
+                txt5 = tds[5].get_text(strip=True)
+                nums5 = re.findall(r"\d+\.\d+", txt5)
+                b["local_win_rate"] = float(nums5[0]) if len(nums5) > 0 else 0
+                b["local_2連rate"] = float(nums5[1]) if len(nums5) > 1 else 0
+                b["local_3連rate"] = float(nums5[2]) if len(nums5) > 2 else 0
 
-            # tdのclass属性からデータを特定
-            for td in tds:
-                cls = " ".join(td.get("class", []))
-                txt = get_text(td)
+            # td[6]: "410.000.00" → モーターNo, 2連率, 3連率
+            if len(tds) > 6:
+                txt6 = tds[6].get_text(strip=True)
+                nums6 = re.findall(r"\d+\.\d+", txt6)
+                b["motor_2連rate"] = float(nums6[0]) if len(nums6) > 0 else 0
+                b["motor_3連rate"] = float(nums6[1]) if len(nums6) > 1 else 0
 
-                # 級別を含むセル（A1, A2, B1, B2）
-                if re.match(r"^[AB][12]$", txt):
-                    b["racer_grade"] = txt
+            # td[7]: "180.000.00" → ボートNo, 2連率, 3連率
+            if len(tds) > 7:
+                txt7 = tds[7].get_text(strip=True)
+                nums7 = re.findall(r"\d+\.\d+", txt7)
+                b["boat_2連rate"] = float(nums7[0]) if len(nums7) > 0 else 0
+                b["boat_3連rate"] = float(nums7[1]) if len(nums7) > 1 else 0
 
-            # 数値配列から位置で判定
-            # 典型的なパターン: 
-            # [登番, F数, 全国勝率, 当地勝率, モーターNo, ボートNo, 
-            #  L数, 全国2連率, 当地2連率, モーター2連率, ボート2連率,
-            #  平均ST, 全国3連率, 当地3連率, モーター3連率, ボート3連率,
-            #  年齢, 体重, ...]
-            if len(all_nums) >= 16:
-                # 登番は3000-5999の範囲
-                start_idx = 0
-                for ni, n in enumerate(all_nums):
-                    if 3000 <= n <= 5999:
-                        start_idx = ni
-                        break
-
-                idx = start_idx
-                # 登番の次
-                idx += 1
-                if idx < len(all_nums):
-                    f_count = all_nums[idx]  # F数
-                idx += 1
-                if idx < len(all_nums):
-                    national_wr = all_nums[idx]  # 全国勝率
-                idx += 1
-                if idx < len(all_nums):
-                    local_wr = all_nums[idx]  # 当地勝率
-                idx += 1
-                if idx < len(all_nums):
-                    pass  # モーターNo (skip)
-                idx += 1
-                if idx < len(all_nums):
-                    pass  # ボートNo (skip)
-                idx += 1
-                if idx < len(all_nums):
-                    l_count = all_nums[idx]  # L数
-                idx += 1
-                if idx < len(all_nums):
-                    national_2r = all_nums[idx]  # 全国2連率
-                idx += 1
-                if idx < len(all_nums):
-                    local_2r = all_nums[idx]  # 当地2連率
-                idx += 1
-                if idx < len(all_nums):
-                    motor_2r = all_nums[idx]  # モーター2連率
-                idx += 1
-                if idx < len(all_nums):
-                    boat_2r = all_nums[idx]  # ボート2連率
-                idx += 1
-                if idx < len(all_nums):
-                    avg_st = all_nums[idx]  # 平均ST
-                idx += 1
-                if idx < len(all_nums):
-                    national_3r = all_nums[idx]  # 全国3連率
-                idx += 1
-                if idx < len(all_nums):
-                    local_3r = all_nums[idx]  # 当地3連率
-                idx += 1
-                if idx < len(all_nums):
-                    motor_3r = all_nums[idx]  # モーター3連率
-                idx += 1
-                if idx < len(all_nums):
-                    boat_3r = all_nums[idx]  # ボート3連率
-
-            b["national_win_rate"] = national_wr
-            b["national_2連rate"] = national_2r
-            b["national_3連rate"] = national_3r
-            b["local_win_rate"] = local_wr
-            b["local_2連rate"] = local_2r
-            b["local_3連rate"] = local_3r
-            b["motor_2連rate"] = motor_2r
-            b["motor_3連rate"] = motor_3r
-            b["boat_2連rate"] = boat_2r
-            b["boat_3連rate"] = boat_3r
-            b["avg_st"] = avg_st
-            b["flying_count"] = f_count
-            b["late_count"] = l_count
-            b["machine_score"] = (motor_2r + boat_2r) / 2
+            # デフォルト値
+            b.setdefault("national_win_rate", 0)
+            b.setdefault("national_2連rate", 0)
+            b.setdefault("national_3連rate", 0)
+            b.setdefault("local_win_rate", 0)
+            b.setdefault("local_2連rate", 0)
+            b.setdefault("local_3連rate", 0)
+            b.setdefault("motor_2連rate", 0)
+            b.setdefault("motor_3連rate", 0)
+            b.setdefault("boat_2連rate", 0)
+            b.setdefault("boat_3連rate", 0)
+            b.setdefault("avg_st", 0)
+            b.setdefault("flying_count", 0)
+            b.setdefault("late_count", 0)
+            b["machine_score"] = (b["motor_2連rate"] + b["boat_2連rate"]) / 2
             b["exhibition_time"] = 0.0
             b["start_timing"] = 0.0
             b["entry_course"] = float(waku)
@@ -317,7 +256,6 @@ def scrape_beforeinfo(jcd, race_num, date_str):
             boats.append(b)
 
     except Exception as e:
-        # 出走表取得失敗時はデフォルト6艇
         for waku in range(1, 7):
             boats.append({
                 "waku": waku,
@@ -335,96 +273,113 @@ def scrape_beforeinfo(jcd, race_num, date_str):
     # ========================================
     url_before = f"https://www.boatrace.jp/owpc/pc/race/beforeinfo?rno={race_num}&jcd={jcd}&hd={date_str}"
     try:
-        r2 = requests.get(url_before, headers=HEADERS, timeout=10)
+        r2 = requests.get(url_before, headers=HEADERS, timeout=15)
         soup2 = BeautifulSoup(r2.content, "html.parser")
 
-        # 天候情報
-        body_units = soup2.select("div.weather1_body")
-        for unit in body_units:
-            label = get_text(unit.select_one("p.weather1_bodyUnitLabelTitle")) or \
-                    get_text(unit.select_one("span.weather1_bodyUnitLabelTitle")) or ""
-            data = get_text(unit.select_one("p.weather1_bodyUnitLabelData")) or \
-                   get_text(unit.select_one("span.weather1_bodyUnitLabelData")) or ""
-            if not data:
-                img = unit.select_one("img")
-                if img:
-                    data = img.get("alt", "")
+        # 天候: class名から判定
+        # is-weather1=晴, is-weather2=曇り, is-weather3=雨, is-weather4=雪, is-weather5=霧
+        weather_img = soup2.select_one("p.is-weather1, p.is-weather2, p.is-weather3, p.is-weather4, p.is-weather5")
+        if weather_img:
+            for cls in weather_img.get("class", []):
+                if cls == "is-weather1":
+                    result["weather"] = "晴"
+                elif cls == "is-weather2":
+                    result["weather"] = "曇り"
+                elif cls == "is-weather3":
+                    result["weather"] = "雨"
+                elif cls == "is-weather4":
+                    result["weather"] = "雪"
+                elif cls == "is-weather5":
+                    result["weather"] = "霧"
+        else:
+            # タイトルに天候名がある場合
+            weather_units = soup2.select("div.weather1_bodyUnit.is-weather")
+            for wu in weather_units:
+                title = wu.select_one("span.weather1_bodyUnitLabelTitle")
+                if title:
+                    result["weather"] = title.get_text(strip=True)
 
-            if "天候" in label:
-                result["weather"] = data
-            elif "風速" in label:
-                result["wind_speed"] = safe_float(re.sub(r"[^0-9.]", "", data))
-            elif "波高" in label:
-                result["wave"] = safe_float(re.sub(r"[^0-9.]", "", data))
+        # 風向: is-windXX のclass名から
+        wind_img = soup2.select_one("p[class*='is-wind']")
+        if wind_img:
+            wind_names = {
+                "1":"北","2":"北北東","3":"北東","4":"東北東",
+                "5":"東","6":"東南東","7":"南東","8":"南南東",
+                "9":"南","10":"南南西","11":"南西","12":"西南西",
+                "13":"西","14":"西北西","15":"北西","16":"北北西"
+            }
+            for cls in wind_img.get("class", []):
+                m = re.search(r"is-wind(\d+)", cls)
+                if m:
+                    result["wind_dir"] = wind_names.get(m.group(1), "")
 
-        # 風向
-        wind_p = soup2.select_one("p.weather1_bodyUnitImage")
-        if wind_p:
-            img = wind_p.select_one("img")
-            if img:
-                result["wind_dir"] = img.get("alt", "")
-                if not result["wind_dir"]:
-                    for c in img.get("class", []):
-                        m = re.search(r"is-wind(\d+)", c)
-                        if m:
-                            wn = {"1":"北","2":"北北東","3":"北東","4":"東北東",
-                                  "5":"東","6":"東南東","7":"南東","8":"南南東",
-                                  "9":"南","10":"南南西","11":"南西","12":"西南西",
-                                  "13":"西","14":"西北西","15":"北西","16":"北北西"}
-                            result["wind_dir"] = wn.get(m.group(1), "")
+        # 風速
+        wind_units = soup2.select("div.weather1_bodyUnit.is-wind")
+        for wu in wind_units:
+            data = wu.select_one("span.weather1_bodyUnitLabelData")
+            if data:
+                result["wind_speed"] = safe_float(re.sub(r"[^0-9.]", "", data.get_text(strip=True)))
 
-        # 展示タイム（直前情報ページのtbody）
+        # 波高
+        wave_units = soup2.select("div.weather1_bodyUnit.is-wave")
+        for wu in wave_units:
+            data = wu.select_one("span.weather1_bodyUnitLabelData")
+            if data:
+                result["wave"] = safe_float(re.sub(r"[^0-9.]", "", data.get_text(strip=True)))
+
+        # 展示タイム: td[4] が展示タイム
         tbody_list2 = soup2.select("tbody.is-fs12")
         for i, tbody in enumerate(tbody_list2[:6]):
             if i >= len(boats):
                 break
             tds = tbody.select("td")
-            for td in tds:
-                txt = get_text(td)
-                try:
-                    v = float(txt)
-                    if 6.0 <= v <= 7.99:
-                        boats[i]["exhibition_time"] = v
-                        break
-                except:
-                    pass
+            if len(tds) > 4:
+                et_txt = tds[4].get_text(strip=True)
+                et_val = safe_float(et_txt)
+                if 6.0 <= et_val <= 7.99:
+                    boats[i]["exhibition_time"] = et_val
 
-        # スタート展示タイミング
-        for i, tbody in enumerate(tbody_list2[:6]):
-            if i >= len(boats):
-                break
-            tds = tbody.select("td")
-            for td in tds:
-                txt = get_text(td)
-                # .XX 形式のST
-                m = re.match(r"^[.](\d+)$", txt)
-                if m:
-                    boats[i]["start_timing"] = float(f"0.{m.group(1)}")
-                    break
-                # F.XX 形式
-                m2 = re.match(r"^F[.]?(\d+)$", txt)
-                if m2:
-                    boats[i]["start_timing"] = -float(f"0.{m2.group(1)}")
-                    break
+            # スタート展示: td[5] がチルト、ST展示は別の場所
 
-        # 進入コース
-        # スタート展示の並び順から取得
-        start_div = soup2.select_one("div.table1")
-        if start_div:
-            all_spans = start_div.select("span")
-            course_nums = []
-            for sp in all_spans:
-                txt = get_text(sp)
-                if txt.isdigit() and 1 <= int(txt) <= 6:
-                    course_nums.append(int(txt))
-            if len(course_nums) >= 6:
-                # course_nums[0] = 1コースに入った艇番, ...
-                for ci, waku_num in enumerate(course_nums[:6]):
-                    for b in boats:
-                        if b["waku"] == waku_num:
-                            b["entry_course"] = float(ci + 1)
-                            b["course_diff"] = b["entry_course"] - b["waku"]
-                            break
+        # 進入コース・ST展示（スタート展示セクション）
+        # "コース 並び ST" のテーブルから取得
+        start_tables = soup2.select("div.table1 table")
+        for tbl in start_tables:
+            rows = tbl.select("tr")
+            course_data = []
+            for row in rows:
+                cells = row.select("td")
+                if len(cells) >= 2:
+                    # 1コース目から順に艇番とSTが入る
+                    for cell in cells:
+                        txt = cell.get_text(strip=True)
+                        if txt.isdigit() and 1 <= int(txt) <= 6:
+                            course_data.append(int(txt))
+
+            # スタート展示のSTタイミング
+            st_texts = []
+            all_tds = tbl.select("td")
+            for td in all_tds:
+                txt = td.get_text(strip=True)
+                if re.match(r"^[F.]?\d+\.?\d*$", txt) or txt.startswith("F"):
+                    if txt.startswith("F"):
+                        st_texts.append(-safe_float(txt[1:].replace(".", "0.", 1) if not "." in txt[1:] else txt[1:]))
+                    elif txt.startswith("."):
+                        st_texts.append(safe_float("0" + txt))
+
+        # 別の方法: スタート展示のテキストから直接パース
+        page_text = soup2.get_text()
+        # "F.04" ".17" ".11" などのパターンを探す
+        st_pattern = re.findall(r"[FL]?\.\d{2}", page_text)
+        if len(st_pattern) >= 6:
+            for si, st_str in enumerate(st_pattern[:6]):
+                if si < len(boats):
+                    if st_str.startswith("F"):
+                        boats[si]["start_timing"] = -safe_float("0" + st_str[1:])
+                    elif st_str.startswith("L"):
+                        boats[si]["start_timing"] = safe_float("0" + st_str[1:])
+                    else:
+                        boats[si]["start_timing"] = safe_float("0" + st_str)
 
     except:
         pass
