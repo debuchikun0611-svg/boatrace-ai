@@ -943,11 +943,6 @@ else:
 
 # フッター
 st.divider()
-st.caption(
-    f"🤖 Boatrace AI v8 | {n_models}モデル アンサンブル LambdaRank | "
-    f"{len(lr2_features)}特徴量 | "
-    f"Back-test: Top-1 11.24%, ROI 135.9% | "
-    f"高信頼(8票+): Top-1 15.0%, ROI 147.8%"
 # デバッグモード
 st.divider()
 with st.expander("🔧 デバッグ: HTML構造確認"):
@@ -998,4 +993,9 @@ with st.expander("🔧 デバッグ: HTML構造確認"):
                     st.text(f"td[{j}]: class={cls} text='{txt}'")
         except Exception as e:
             st.error(f"直前情報エラー: {e}")
+st.caption(
+    f"🤖 Boatrace AI v8 | {n_models}モデル アンサンブル LambdaRank | "
+    f"{len(lr2_features)}特徴量 | "
+    f"Back-test: Top-1 11.24%, ROI 135.9% | "
+    f"高信頼(8票+): Top-1 15.0%, ROI 147.8%"
 )
